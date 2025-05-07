@@ -3,7 +3,7 @@ import random
 
 st.set_page_config(layout="centered", page_title="Baccarat Predictor")
 
-st.title("Grok vs. Baccarat (Web Version)")
+st.title("MANG BACCARAT GROUP")
 
 # --- SESSION STATE INIT ---
 if 'bankroll' not in st.session_state:
