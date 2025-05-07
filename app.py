@@ -111,11 +111,9 @@ col1, col2 = st.columns(2)
 with col1:
     if st.button("Player (P)"):
         place_result("P")
-        st.experimental_rerun()
 with col2:
     if st.button("Banker (B)"):
         place_result("B")
-        st.experimental_rerun()
 
 # --- DISPLAY ---
 st.subheader("Current Sequence")
