@@ -34,8 +34,8 @@ if st.button("Start Session"):
     st.success("Session started!")
 
 if st.button("Reset"):
-    st.experimental_rerun()
     st.session_state.clear()
+    st.success("App state cleared. Please reload the page.")
 
 # --- FUNCTIONS ---
 def analyze_pattern(seq):
