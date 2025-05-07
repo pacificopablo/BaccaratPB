@@ -1,9 +1,9 @@
 import streamlit as st
 import random
 
-st.set_page_config(layout="centered", page_title="Baccarat Predictor")
+st.set_page_config(layout="centered", page_title="MANG BACCARAT GROUP")
 
-st.title("Grok vs. Baccarat (Web Version)")
+st.title("MANG BACCARAT GROUP")
 
 # --- SESSION STATE INIT ---
 if 'bankroll' not in st.session_state:
@@ -32,10 +32,6 @@ if st.button("Start Session"):
     st.session_state.t3_results = []
     st.session_state.advice = ""
     st.success("Session started!")
-
-if st.button("Reset"):
-    st.session_state.clear()
-    st.success("App state cleared. Please reload the page.")
 
 # --- FUNCTIONS ---
 def analyze_pattern(seq):
