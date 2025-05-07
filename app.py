@@ -3,7 +3,7 @@ import random
 
 st.set_page_config(layout="centered", page_title="Baccarat Predictor")
 
-st.title("MANG BACCARAT GROUP")
+st.title("Grok vs. Baccarat (Web Version)")
 
 # --- SESSION STATE INIT ---
 if 'bankroll' not in st.session_state:
@@ -34,9 +34,8 @@ if st.button("Start Session"):
     st.success("Session started!")
 
 if st.button("Reset"):
-    for key in st.session_state.keys():
-        del st.session_state[key]
     st.experimental_rerun()
+    st.session_state.clear()
 
 # --- FUNCTIONS ---
 def analyze_pattern(seq):
