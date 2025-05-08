@@ -22,7 +22,7 @@ if 'bankroll' not in st.session_state:
     st.session_state.target_value = 10.0
     st.session_state.initial_bankroll = 0.0
     st.session_state.target_hit = False
-    st.session_state.prediction_accuracy = {'P': 0, 'B': 0, 'T': 0, 'total': 0}
+    st.session_state.prediction_accuracy = {'P': 0, 'B': 0, 'total': 0}
     st.session_state.consecutive_losses = 0
     st.session_state.markov_transitions = defaultdict(lambda: {'P': 0, 'B': 0, 'T': 0})
 
@@ -65,7 +65,7 @@ if start_clicked:
         st.session_state.target_value = target_value
         st.session_state.initial_bankroll = bankroll
         st.session_state.target_hit = False
-        st.session_state.prediction_accuracy = {'P': 0, 'B': 0, 'T': 0, 'total': 0}
+        st.session_state.prediction_accuracy = {'P': 0, 'B': 0, 'total': 0}
         st.session_state.consecutive_losses = 0
         st.session_state.markov_transitions = defaultdict(lambda: {'P': 0, 'B': 0, 'T': 0})
         st.success("Session started!")
@@ -144,7 +144,7 @@ def place_result(result):
         return
 
     bet_amount = 0
-    if st.session_state.pending_bet:
+    if st.session_state.pending_bet and result != 'T':
         bet_amount, selection = st.session_state.pending_bet
         win = result == selection
         if win:
@@ -240,8 +240,8 @@ with col4:
                 st.session_state.prediction_accuracy[last['Bet']] -= 1
                 st.session_state.consecutive_losses = 0
             else:
-                st.session_state.losses -= 1
                 st.session_state.bankroll += last['Amount']
+                st.session_state.losses -= 1
                 st.session_state.consecutive_losses = max(0, st.session_state.consecutive_losses - 1)
             st.session_state.prediction_accuracy['total'] -= 1
             st.session_state.t3_level = last['T3_Level']
@@ -296,7 +296,7 @@ if st.session_state.history:
             "Result": h["Result"],
             "Amount": f"${h['Amount']:.0f}",
             "Outcome": "Win" if h["Win"] else "Loss",
-            "T3 Level": h["T3_Level"]
+            "T3_Level": h["T3_Level"]
         }
         for h in st.session_state.history[-n:]
     ])
