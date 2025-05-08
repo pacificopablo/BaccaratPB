@@ -264,6 +264,11 @@ else:
     if not st.session_state.target_hit:
         st.info(st.session_state.advice)
 
+# --- UNIT PROFIT ---
+if st.session_state.base_bet > 0:
+    units_profit = int((st.session_state.bankroll - st.session_state.initial_bankroll) // st.session_state.base_bet)
+    st.markdown(f"**Units Profit**: {units_profit}")
+
 # --- STATUS ---
 st.subheader("Status")
 st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
@@ -280,11 +285,6 @@ if total > 0:
     b_accuracy = (st.session_state.prediction_accuracy['B'] / total) * 100
     st.markdown(f"**Player Bets**: {st.session_state.prediction_accuracy['P']}/{total} ({p_accuracy:.1f}%)")
     st.markdown(f"**Banker Bets**: {st.session_state.prediction_accuracy['B']}/{total} ({b_accuracy:.1f}%)")
-
-# --- UNIT PROFIT ---
-if st.session_state.base_bet > 0:
-    units_profit = int((st.session_state.bankroll - st.session_state.initial_bankroll) // st.session_state.base_bet)
-    st.markdown(f"**Units Profit**: {units_profit}")
 
 # --- HISTORY TABLE ---
 if st.session_state.history:
