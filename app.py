@@ -11,7 +11,7 @@ if 'bankroll' not in st.session_state:
     st.session_state.base_bet = 0.0
     st.session_state.sequence = []
     st.session_state.pending_bet = None
-    st.session_state.strategy = 'T3'
+    st.session_state.strategy = 'T3'  # Betting strategy (T3 or Flatbet)
     st.session_state.t3_level = 1
     st.session_state.t3_results = []
     st.session_state.advice = ""
@@ -24,8 +24,8 @@ if 'bankroll' not in st.session_state:
     st.session_state.target_hit = False
     st.session_state.prediction_accuracy = {'P': 0, 'B': 0, 'total': 0}
     st.session_state.consecutive_losses = 0
-    st.session_state.loss_log = []  # Log loss sequences
-    st.session_state.last_was_tie = False  # Track if last result was Tie
+    st.session_state.loss_log = []
+    st.session_state.last_was_tie = False
 
 # --- RESET BUTTON ---
 if st.button("Reset Session"):
@@ -38,7 +38,12 @@ st.subheader("Setup")
 with st.form("setup_form"):
     bankroll = st.number_input("Enter Bankroll ($)", min_value=0.0, value=st.session_state.bankroll, step=10.0)
     base_bet = st.number_input("Enter Base Bet ($)", min_value=0.0, value=st.session_state.base_bet, step=1.0)
-    strategy = st.selectbox("Choose Strategy", ["T3", "Flatbet"], index=["T3", "Flatbet"].index(st.session_state.strategy))
+    betting_strategy = st.selectbox(
+        "Choose Betting Strategy",
+        ["T3", "Flatbet"],
+        index=["T3", "Flatbet"].index(st.session_state.strategy),
+        help="T3: Adjusts bet size based on wins/losses. Flatbet: Uses a fixed bet size."
+    )
     target_mode = st.radio("Target Type", ["Profit %", "Units"], index=0, horizontal=True)
     target_value = st.number_input("Target Value", min_value=1.0, value=float(st.session_state.target_value), step=1.0)
     start_clicked = st.form_submit_button("Start Session")
@@ -53,7 +58,7 @@ if start_clicked:
     else:
         st.session_state.bankroll = bankroll
         st.session_state.base_bet = base_bet
-        st.session_state.strategy = strategy
+        st.session_state.strategy = betting_strategy
         st.session_state.sequence = []
         st.session_state.pending_bet = None
         st.session_state.t3_level = 1
@@ -74,52 +79,34 @@ if start_clicked:
 
 # --- FUNCTIONS ---
 def predict_next():
-    sequence = [x for x in st.session_state.sequence[-4:] if x in ['P', 'B']]  # Last 4 outcomes, ignore Ties
+    sequence = [x for x in st.session_state.sequence if x in ['P', 'B']]  # Non-Tie outcomes
     if len(sequence) < 2:
-        return 'B', 65  # Default to Banker with 65% confidence
+        return 'B', 45.86  # Default to Banker with theoretical probability
 
-    # Rule-based prediction
-    last_three = sequence[-3:] if len(sequence) >= 3 else []
-    last_four = sequence[-4:] if len(sequence) >= 4 else []
+    # Get the last bigram (last 2 non-Tie outcomes)
+    bigram = sequence[-2:]
 
-    # Rule 1: Last 3 outcomes PPP or BBB → Bet opposite
-    if len(last_three) == 3 and (last_three == ['P', 'P', 'P'] or last_three == ['B', 'B', 'B']):
-        return 'P' if last_three[-1] == 'B' else 'B', 65
+    # Count transitions from this bigram in the sequence
+    transitions = defaultdict(int)
+    for i in range(len(sequence) - 2):
+        if sequence[i:i+2] == bigram:
+            next_outcome = sequence[i+2]
+            transitions[next_outcome] += 1
 
-    # Rule 2: Last outcome B or P → Bet same
-    if len(sequence) >= 1:
-        return sequence[-1], 65
+    # Calculate transition probabilities
+    total_transitions = sum(transitions.values())
+    if total_transitions > 0:
+        prob_p = (transitions['P'] / total_transitions) * 100
+        prob_b = (transitions['B'] / total_transitions) * 100
+    else:
+        # Use theoretical Baccarat probabilities (ignoring Ties)
+        prob_p = 44.62  # Player probability
+        prob_b = 45.86  # Banker probability
 
-    # Rule 3: Last 3 outcomes PBP or BBP → Bet P
-    if len(last_three) == 3 and (last_three in [['P', 'B', 'P'], ['B', 'B', 'P']]):
-        return 'P', 65
-
-    # Rule 4: Last 3 outcomes PBP or BPB → Bet B
-    if len(last_three) == 3 and (last_three in [['P', 'B', 'P'], ['B', 'P', 'B']]):
-        return 'B', 65
-
-    # Rule 5: Third-to-last outcome P or B → Bet same
-    if len(sequence) >= 3:
-        return sequence[-3], 65
-
-    # Rule 6: Last 4 outcomes BPPP or PBBB → Bet P
-    if len(last_four) == 4 and (last_four in [['B', 'P', 'P', 'P'], ['P', 'B', 'B', 'B']]):
-        return 'P', 65
-
-    # Rule 7: Last 4 outcomes BBBP or PPPB → Bet B
-    if len(last_four) == 4 and (last_four in [['B', 'B', 'B', 'P'], ['P', 'P', 'P', 'B']]):
-        return 'B', 65
-
-    # Rule 8: Last 4 outcomes BPP or BPB (corrected from BPR) → Bet B
-    if len(last_four) == 4 and (last_four in [['B', 'P', 'P', 'B'], ['B', 'P', 'B']]):
-        return 'B', 65
-
-    # Rule 9: Last 3 outcomes PBPP or BPPP → Bet P
-    if len(sequence) >= 4 and (sequence[-4:] in [['P', 'B', 'P', 'P'], ['B', 'P', 'P', 'P']]):
-        return 'P', 65
-
-    # Default: Banker preference
-    return 'B', 65
+    # Predict the outcome with higher probability
+    if prob_p > prob_b:
+        return 'P', prob_p
+    return 'B', prob_b
 
 def check_target_hit():
     if st.session_state.target_mode == "Profit %":
@@ -172,7 +159,6 @@ def place_result(result):
             st.session_state.t3_results.append('L')
             st.session_state.losses += 1
             st.session_state.consecutive_losses += 1
-            # Log loss
             st.session_state.loss_log.append({
                 'sequence': st.session_state.sequence[-10:],
                 'prediction': selection,
@@ -209,7 +195,6 @@ def place_result(result):
 
         st.session_state.pending_bet = None
 
-    # Reset consecutive losses for non-bet results (but not Ties)
     if not st.session_state.pending_bet and result != 'T':
         st.session_state.consecutive_losses = 0
 
@@ -221,24 +206,11 @@ def place_result(result):
         st.session_state.target_hit = True
         return
 
-    # Check loss avoidance conditions
+    # Always place a bet for non-Tie rounds
     pred, conf = predict_next()
     bet_amount = st.session_state.base_bet if st.session_state.strategy == 'Flatbet' else st.session_state.base_bet * st.session_state.t3_level
-    if st.session_state.consecutive_losses >= 2:
-        st.session_state.pending_bet = None
-        st.session_state.advice = f"Skip bet: {st.session_state.consecutive_losses} consecutive losses"
-    elif bet_amount > st.session_state.bankroll:
-        st.session_state.pending_bet = None
-        st.session_state.advice = "Skip bet: Insufficient bankroll"
-    elif conf < 65:
-        st.session_state.pending_bet = None
-        st.session_state.advice = f"Skip bet: Low confidence ({conf:.0f}%)"
-    elif st.session_state.last_was_tie:
-        st.session_state.pending_bet = None
-        st.session_state.advice = "Skip bet: Recent Tie result"
-    else:
-        st.session_state.pending_bet = (bet_amount, pred)
-        st.session_state.advice = f"Next Bet: ${bet_amount:.0f} on {pred} ({conf:.0f}%)"
+    st.session_state.pending_bet = (bet_amount, pred)
+    st.session_state.advice = f"Next Bet: ${bet_amount:.0f} on {pred} ({conf:.1f}%)"
 
 # --- RESULT INPUT ---
 st.subheader("Enter Result")
@@ -297,7 +269,7 @@ if st.session_state.base_bet > 0:
 st.subheader("Status")
 st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
 st.markdown(f"**Base Bet**: ${st.session_state.base_bet:.2f}")
-st.markdown(f"**Strategy**: {st.session_state.strategy} | T3 Level: {st.session_state.t3_level}")
+st.markdown(f"**Betting Strategy**: {st.session_state.strategy} | T3 Level: {st.session_state.t3_level}")
 st.markdown(f"**Wins**: {st.session_state.wins} | **Losses**: {st.session_state.losses}")
 st.markdown(f"**Consecutive Losses**: {st.session_state.consecutive_losses}")
 
