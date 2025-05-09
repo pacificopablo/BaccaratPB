@@ -27,6 +27,10 @@ if 'bankroll' not in st.session_state:
     st.session_state.loss_log = []
     st.session_state.last_was_tie = False
 
+# Validate strategy on every load
+if 'strategy' in st.session_state and st.session_state.strategy not in ['T3', 'Flatbet']:
+    st.session_state.strategy = 'T3'
+
 # --- RESET BUTTON ---
 if st.button("Reset Session"):
     for key in list(st.session_state.keys()):
@@ -41,7 +45,7 @@ with st.form("setup_form"):
     betting_strategy = st.selectbox(
         "Choose Betting Strategy",
         ["T3", "Flatbet"],
-        index=["T3", "Flatbet"].index(st.session_state.strategy),
+        index=0 if st.session_state.strategy == "T3" else 1,
         help="T3: Adjusts bet size based on wins/losses. Flatbet: Uses a fixed bet size."
     )
     target_mode = st.radio("Target Type", ["Profit %", "Units"], index=0, horizontal=True)
@@ -62,7 +66,7 @@ if start_clicked:
         st.session_state.sequence = []
         st.session_state.pending_bet = None
         st.session_state.t3_level = 1
-        st.session_state.t3_results = []
+        st.session_state.t3_results = [] if betting_strategy == 'T3' else []
         st.session_state.advice = ""
         st.session_state.history = []
         st.session_state.wins = 0
@@ -75,7 +79,11 @@ if start_clicked:
         st.session_state.consecutive_losses = 0
         st.session_state.loss_log = []
         st.session_state.last_was_tie = False
-        st.success("Session started!")
+        # Reset T3 state for Flatbet
+        if betting_strategy == 'Flatbet':
+            st.session_state.t3_level = 1
+            st.session_state.t3_results = []
+        st.success(f"Session started with {betting_strategy} strategy!")
 
 # --- FUNCTIONS ---
 def predict_next():
@@ -151,13 +159,15 @@ def place_result(result):
                 st.session_state.bankroll += bet_amount * 0.95
             else:
                 st.session_state.bankroll += bet_amount
-            st.session_state.t3_results.append('W')
+            if st.session_state.strategy == 'T3':
+                st.session_state.t3_results.append('W')
             st.session_state.wins += 1
             st.session_state.prediction_accuracy[selection] += 1
             st.session_state.consecutive_losses = 0
         else:
             st.session_state.bankroll -= bet_amount
-            st.session_state.t3_results.append('L')
+            if st.session_state.strategy == 'T3':
+                st.session_state.t3_results.append('L')
             st.session_state.losses += 1
             st.session_state.consecutive_losses += 1
             st.session_state.loss_log.append({
@@ -175,8 +185,8 @@ def place_result(result):
             "Result": result,
             "Amount": bet_amount,
             "Win": win,
-            "T3_Level": st.session_state.t3_level,
-            "T3_Results": st.session_state.t3_results.copy()
+            "T3_Level": st.session_state.t3_level if st.session_state.strategy == 'T3' else 1,
+            "T3_Results": st.session_state.t3_results.copy() if st.session_state.strategy == 'T3' else []
         })
         if len(st.session_state.history) > 1000:
             st.session_state.history = st.session_state.history[-1000:]
@@ -200,7 +210,12 @@ def place_result(result):
         st.session_state.pending_bet = None
         st.session_state.advice = f"No bet (Confidence: {conf:.1f}% < 50.5%)"
     else:
-        bet_amount = st.session_state.base_bet * st.session_state.t3_level
+        # Use fixed bet for Flatbet, T3 level for T3 strategy
+        if st.session_state.strategy == 'Flatbet':
+            bet_amount = st.session_state.base_bet
+        else:  # T3 strategy
+            bet_amount = st.session_state.base_bet * st.session_state.t3_level
+        
         if bet_amount > st.session_state.bankroll:
             st.session_state.pending_bet = None
             st.session_state.advice = "No bet: Insufficient bankroll."
@@ -208,8 +223,8 @@ def place_result(result):
             st.session_state.pending_bet = (bet_amount, pred)
             st.session_state.advice = f"Next Bet: ${bet_amount:.0f} on {pred} ({conf:.1f}%)"
 
-    # T3 Level Adjustment (after 3 bets)
-    if len(st.session_state.t3_results) == 3:
+    # T3 Level Adjustment (only for T3 strategy, after 3 bets)
+    if st.session_state.strategy == 'T3' and len(st.session_state.t3_results) == 3:
         wins = st.session_state.t3_results.count('W')
         losses = st.session_state.t3_results.count('L')
         if wins == 3:
@@ -320,8 +335,12 @@ with col4:
                 st.session_state.losses -= 1
                 st.session_state.consecutive_losses = max(0, st.session_state.consecutive_losses - 1)
             st.session_state.prediction_accuracy['total'] -= 1
-            st.session_state.t3_level = last['T3_Level']
-            st.session_state.t3_results = last['T3_Results']
+            if st.session_state.strategy == 'T3':
+                st.session_state.t3_level = last['T3_Level']
+                st.session_state.t3_results = last['T3_Results']
+            else:
+                st.session_state.t3_level = 1
+                st.session_state.t3_results = []
             st.session_state.pending_bet = None
             st.session_state.advice = "Last entry undone."
             st.session_state.last_was_tie = False
@@ -383,7 +402,8 @@ else:
 st.subheader("Status")
 st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
 st.markdown(f"**Base Bet**: ${st.session_state.base_bet:.2f}")
-st.markdown(f"**Betting Strategy**: {st.session_state.strategy} | T3 Level: {st.session_state.t3_level}")
+st.markdown(f"**Betting Strategy**: {st.session_state.strategy}" + 
+            (f" | T3 Level: {st.session_state.t3_level}" if st.session_state.strategy == 'T3' else ""))
 st.markdown(f"**Wins**: {st.session_state.wins} | **Losses**: {st.session_state.losses}")
 
 # --- PREDICTION ACCURACY ---
@@ -418,7 +438,7 @@ if st.session_state.history:
             "Result": h["Result"],
             "Amount": f"${h['Amount']:.0f}",
             "Outcome": "Win" if h["Win"] else "Loss",
-            "T3_Level": h["T3_Level"]
+            "T3_Level": h["T3_Level"] if st.session_state.strategy == 'T3' else "-"
         }
         for h in st.session_state.history[-n:]
     ])
