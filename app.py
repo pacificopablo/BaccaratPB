@@ -145,6 +145,7 @@ def place_result(result):
     if st.session_state.pending_bet and result != 'T':
         bet_amount, selection = st.session_state.pending_bet
         win = result == selection
+        old_bankroll = st.session_state.bankroll
         if win:
             if selection == 'B':
                 st.session_state.bankroll += bet_amount * 0.95
@@ -180,19 +181,6 @@ def place_result(result):
         if len(st.session_state.history) > 1000:
             st.session_state.history = st.session_state.history[-1000:]
 
-        if len(st.session_state.t3_results) == 3:
-            w = st.session_state.t3_results.count('W')
-            l = st.session_state.t3_results.count('L')
-            if w == 3:
-                st.session_state.t3_level = max(1, st.session_state.t3_level - 2)
-            elif w == 2:
-                st.session_state.t3_level = max(1, st.session_state.t3_level - 1)
-            elif l == 2:
-                st.session_state.t3_level += 1
-            elif l == 3:
-                st.session_state.t3_level += 2
-            st.session_state.t3_results = []
-
         st.session_state.pending_bet = None
 
     if not st.session_state.pending_bet and result != 'T':
@@ -206,26 +194,119 @@ def place_result(result):
         st.session_state.target_hit = True
         return
 
-    # Always place a bet for non-Tie rounds
+    # Check confidence and bankroll before placing a bet
     pred, conf = predict_next()
-    bet_amount = st.session_state.base_bet if st.session_state.strategy == 'Flatbet' else st.session_state.base_bet * st.session_state.t3_level
-    st.session_state.pending_bet = (bet_amount, pred)
-    st.session_state.advice = f"Next Bet: ${bet_amount:.0f} on {pred} ({conf:.1f}%)"
+    if conf < 50.5:
+        st.session_state.pending_bet = None
+        st.session_state.advice = f"No bet (Confidence: {conf:.1f}% < 50.5%)"
+    else:
+        bet_amount = st.session_state.base_bet * st.session_state.t3_level
+        if bet_amount > st.session_state.bankroll:
+            st.session_state.pending_bet = None
+            st.session_state.advice = "No bet: Insufficient bankroll."
+        else:
+            st.session_state.pending_bet = (bet_amount, pred)
+            st.session_state.advice = f"Next Bet: ${bet_amount:.0f} on {pred} ({conf:.1f}%)"
 
-# --- RESULT INPUT ---
+    # T3 Level Adjustment (after 3 bets)
+    if len(st.session_state.t3_results) == 3:
+        wins = st.session_state.t3_results.count('W')
+        losses = st.session_state.t3_results.count('L')
+        if wins == 3:
+            st.session_state.t3_level = max(1, st.session_state.t3_level - 2)  # Move -2 levels
+        elif wins == 2 and losses == 1:
+            st.session_state.t3_level = max(1, st.session_state.t3_level - 1)  # Move -1 level
+        elif losses == 2 and wins == 1:
+            st.session_state.t3_level = st.session_state.t3_level + 1  # Move +1 level
+        elif losses == 3:
+            st.session_state.t3_level = st.session_state.t3_level + 2  # Move +2 levels
+        st.session_state.t3_results = []  # Reset for next sequence
+
+# --- RESULT INPUT WITH NATIVE STREAMLIT BUTTONS ---
 st.subheader("Enter Result")
+
+# Custom CSS for smaller button styling
+st.markdown("""
+<style>
+div.stButton > button {
+    width: 90px;
+    height: 35px;
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 6px;
+    border: 1px solid;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+div.stButton > button:hover {
+    transform: scale(1.08);
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
+}
+div.stButton > button:active {
+    transform: scale(0.95);
+    box-shadow: none;
+}
+div.stButton > button[kind="player_btn"] {
+    background: linear-gradient(to bottom, #007bff, #0056b3);
+    border-color: #0056b3;
+    color: white;
+}
+div.stButton > button[kind="player_btn"]:hover {
+    background: linear-gradient(to bottom, #339cff, #007bff);
+}
+div.stButton > button[kind="banker_btn"] {
+    background: linear-gradient(to bottom, #dc3545, #a71d2a);
+    border-color: #a71d2a;
+    color: white;
+}
+div.stButton > button[kind="banker_btn"]:hover {
+    background: linear-gradient(to bottom, #ff6666, #dc3545);
+}
+div.stButton > button[kind="tie_btn"] {
+    background: linear-gradient(to bottom, #28a745, #1e7e34);
+    border-color: #1e7e34;
+    color: white;
+}
+div.stButton > button[kind="tie_btn"]:hover {
+    background: linear-gradient(to bottom, #4caf50, #28a745);
+}
+div.stButton > button[kind="undo_btn"] {
+    background: linear-gradient(to bottom, #6c757d, #545b62);
+    border-color: #545b62;
+    color: white;
+}
+div.stButton > button[kind="undo_btn"]:hover {
+    background: linear-gradient(to bottom, #8e959c, #6c757d);
+}
+@media (max-width: 600px) {
+    div.stButton > button {
+        width: 80%;
+        max-width: 150px;
+        height: 40px;
+        font-size: 12px;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Create a 4-column layout for buttons
 col1, col2, col3, col4 = st.columns(4)
+
 with col1:
-    if st.button("Player (P)"):
+    if st.button("Player", key="player_btn"):
         place_result("P")
 with col2:
-    if st.button("Banker (B)"):
+    if st.button("Banker", key="banker_btn"):
         place_result("B")
 with col3:
-    if st.button("Tie (T)"):
+    if st.button("Tie", key="tie_btn"):
         place_result("T")
 with col4:
-    if st.button("Undo Last"):
+    if st.button("Undo Last", key="undo_btn"):
         if st.session_state.history and st.session_state.sequence:
             st.session_state.sequence.pop()
             last = st.session_state.history.pop()
@@ -245,10 +326,43 @@ with col4:
             st.session_state.advice = "Last entry undone."
             st.session_state.last_was_tie = False
 
-# --- DISPLAY SEQUENCE ---
-st.subheader("Current Sequence")
-latest_sequence = st.session_state.sequence[-20:] if 'sequence' in st.session_state else []
-st.text(", ".join(latest_sequence or ["None"]))
+# --- DISPLAY SEQUENCE AS BEAD PLATE ---
+st.subheader("Current Sequence (Bead Plate)")
+sequence = st.session_state.sequence[-100:] if 'sequence' in st.session_state else []
+
+grid = []
+current_col = []
+for result in sequence:
+    if len(current_col) < 6:
+        current_col.append(result)
+    else:
+        grid.append(current_col)
+        current_col = [result]
+if current_col:
+    grid.append(current_col)
+
+if grid and len(grid[-1]) < 6:
+    grid[-1] += [''] * (6 - len(grid[-1]))
+
+num_columns = len(grid)
+
+bead_plate_html = "<div style='display: flex; flex-direction: row; gap: 5px; max-width: 120px; overflow-x: auto;'>"
+for col in grid[:num_columns]:
+    col_html = "<div style='display: flex; flex-direction: column; gap: 5px;'>"
+    for result in col:
+        if result == '':
+            col_html += "<div style='width: 20px; height: 20px;'></div>"
+        elif result == 'P':
+            col_html += "<div style='width: 20px; height: 20px; background-color: blue; border-radius: 50%;'></div>"
+        elif result == 'B':
+            col_html += "<div style='width: 20px; height: 20px; background-color: red; border-radius: 50%;'></div>"
+        elif result == 'T':
+            col_html += "<div style='width: 20px; height: 20px; background-color: green; border-radius: 50%;'></div>"
+    col_html += "</div>"
+    bead_plate_html += col_html
+bead_plate_html += "</div>"
+
+st.markdown(bead_plate_html, unsafe_allow_html=True)
 
 # --- PREDICTION DISPLAY ---
 if st.session_state.pending_bet:
@@ -261,9 +375,12 @@ else:
         st.info(st.session_state.advice)
 
 # --- UNIT PROFIT ---
-if st.session_state.base_bet > 0:
-    units_profit = int((st.session_state.bankroll - st.session_state.initial_bankroll) // st.session_state.base_bet)
-    st.markdown(f"**Units Profit**: {units_profit}")
+if st.session_state.base_bet > 0 and st.session_state.initial_bankroll > 0:
+    profit = st.session_state.bankroll - st.session_state.initial_bankroll
+    units_profit = profit / st.session_state.base_bet
+    st.markdown(f"**Units Profit**: {units_profit:.2f} units (${profit:.2f})")
+else:
+    st.markdown("**Units Profit**: 0.00 units ($0.00)")
 
 # --- STATUS ---
 st.subheader("Status")
@@ -271,7 +388,6 @@ st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
 st.markdown(f"**Base Bet**: ${st.session_state.base_bet:.2f}")
 st.markdown(f"**Betting Strategy**: {st.session_state.strategy} | T3 Level: {st.session_state.t3_level}")
 st.markdown(f"**Wins**: {st.session_state.wins} | **Losses**: {st.session_state.losses}")
-st.markdown(f"**Consecutive Losses**: {st.session_state.consecutive_losses}")
 
 # --- PREDICTION ACCURACY ---
 st.subheader("Prediction Accuracy")
