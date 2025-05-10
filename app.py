@@ -1,7 +1,51 @@
 import streamlit as st
-import random
 from collections import defaultdict
+import os
+import time
+from datetime import datetime, timedelta
 
+# --- FILE-BASED SESSION TRACKING ---
+SESSION_FILE = "online_users.txt"
+
+def track_user_session_file():
+    # Generate a unique session ID if not already set
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = str(time.time())
+    
+    # Read and clean up expired sessions
+    sessions = {}
+    current_time = datetime.now()
+    try:
+        with open(SESSION_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    session_id, timestamp = line.strip().split(',')
+                    last_seen = datetime.fromisoformat(timestamp)
+                    if current_time - last_seen <= timedelta(seconds=30):
+                        sessions[session_id] = last_seen
+                except ValueError:
+                    continue  # Skip malformed lines
+    except FileNotFoundError:
+        pass
+    except PermissionError:
+        st.error("Unable to access session file. Online user count unavailable.")
+        return 0
+    
+    # Add or update current session
+    sessions[st.session_state.session_id] = current_time
+    
+    # Write back active sessions
+    try:
+        with open(SESSION_FILE, 'w', encoding='utf-8') as f:
+            for session_id, last_seen in sessions.items():
+                f.write(f"{session_id},{last_seen.isoformat()}\n")
+    except PermissionError:
+        st.error("Unable to write to session file. Online user count may be inaccurate.")
+        return 0
+    
+    return len(sessions)
+
+# --- APP CONFIG ---
 st.set_page_config(layout="centered", page_title="MANG BACCARAT GROUP")
 st.title("MANG BACCARAT GROUP")
 
@@ -9,14 +53,17 @@ st.title("MANG BACCARAT GROUP")
 if 'bankroll' not in st.session_state:
     st.session_state.bankroll = 0.0
     st.session_state.base_bet = 0.0
+    st.session_state.initial_base_bet = 0.0  # Store initial base bet
     st.session_state.sequence = []
     st.session_state.pending_bet = None
-    st.session_state.strategy = 'T3'  # Betting strategy (T3, Flatbet, Parlay16)
+    st.session_state.strategy = 'T3'
     st.session_state.t3_level = 1
     st.session_state.t3_results = []
-    st.session_state.parlay_step = 1  # Current step in Parlay (1-16)
-    st.session_state.parlay_wins = 0  # Track consecutive wins for reset
-    st.session_state.parlay_using_base = True  # True: use base value, False: use parlay value
+    st.session_state.t3_level_changes = 0  # Track T3 level changes
+    st.session_state.parlay_step = 1
+    st.session_state.parlay_wins = 0
+    st.session_state.parlay_using_base = True
+    st.session_state.parlay_step_changes = 0  # Track Parlay step changes
     st.session_state.advice = ""
     st.session_state.history = []
     st.session_state.wins = 0
@@ -33,12 +80,6 @@ if 'bankroll' not in st.session_state:
 # Validate strategy on every load
 if 'strategy' in st.session_state and st.session_state.strategy not in ['T3', 'Flatbet', 'Parlay16']:
     st.session_state.strategy = 'T3'
-
-# --- RESET BUTTON ---
-if st.button("Reset Session"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.experimental_rerun()
 
 # --- SETUP FORM ---
 st.subheader("Setup")
@@ -65,14 +106,17 @@ if start_clicked:
     else:
         st.session_state.bankroll = bankroll
         st.session_state.base_bet = base_bet
+        st.session_state.initial_base_bet = base_bet  # Store initial base bet
         st.session_state.strategy = betting_strategy
         st.session_state.sequence = []
         st.session_state.pending_bet = None
         st.session_state.t3_level = 1
         st.session_state.t3_results = [] if betting_strategy == 'T3' else []
-        st.session_state.parlay_step = 1  # Initialize Parlay step
-        st.session_state.parlay_wins = 0  # Initialize consecutive wins
-        st.session_state.parlay_using_base = True  # Start with base value
+        st.session_state.t3_level_changes = 0  # Reset T3 level changes
+        st.session_state.parlay_step = 1
+        st.session_state.parlay_wins = 0
+        st.session_state.parlay_using_base = True
+        st.session_state.parlay_step_changes = 0  # Reset Parlay step changes
         st.session_state.advice = ""
         st.session_state.history = []
         st.session_state.wins = 0
@@ -85,82 +129,71 @@ if start_clicked:
         st.session_state.consecutive_losses = 0
         st.session_state.loss_log = []
         st.session_state.last_was_tie = False
-        # Reset strategy-specific state
         if betting_strategy == 'Flatbet':
             st.session_state.t3_level = 1
             st.session_state.t3_results = []
+            st.session_state.t3_level_changes = 0
             st.session_state.parlay_step = 1
             st.session_state.parlay_wins = 0
             st.session_state.parlay_using_base = True
+            st.session_state.parlay_step_changes = 0
         elif betting_strategy == 'Parlay16':
             st.session_state.t3_level = 1
             st.session_state.t3_results = []
+            st.session_state.t3_level_changes = 0
             st.session_state.parlay_step = 1
             st.session_state.parlay_wins = 0
             st.session_state.parlay_using_base = True
+            st.session_state.parlay_step_changes = 0
         st.success(f"Session started with {betting_strategy} strategy!")
 
-# --- PARLAY TABLE (Base/Unit and Parlay values, limited to 16 steps) ---
+# --- PARLAY TABLE ---
 PARLAY_TABLE = {
-    1: {'base': 10, 'parlay': 20},
-    2: {'base': 10, 'parlay': 20},
-    3: {'base': 10, 'parlay': 20},
-    4: {'base': 20, 'parlay': 40},
-    5: {'base': 30, 'parlay': 60},
-    6: {'base': 40, 'parlay': 80},
-    7: {'base': 60, 'parlay': 120},
-    8: {'base': 80, 'parlay': 160},
-    9: {'base': 120, 'parlay': 240},
-    10: {'base': 160, 'parlay': 320},
-    11: {'base': 220, 'parlay': 440},
-    12: {'base': 300, 'parlay': 600},
-    13: {'base': 400, 'parlay': 800},
-    14: {'base': 520, 'parlay': 1040},
-    15: {'base': 700, 'parlay': 1400},
-    16: {'base': 950, 'parlay': 1900}
+    1: {'base': 1, 'parlay': 2},    # Start at base_bet
+    2: {'base': 1, 'parlay': 2},
+    3: {'base': 1, 'parlay': 2},
+    4: {'base': 2, 'parlay': 4},
+    5: {'base': 3, 'parlay': 6},
+    6: {'base': 4, 'parlay': 8},
+    7: {'base': 6, 'parlay': 12},
+    8: {'base': 8, 'parlay': 16},
+    9: {'base': 12, 'parlay': 24},
+    10: {'base': 16, 'parlay': 32},
+    11: {'base': 22, 'parlay': 44},
+    12: {'base': 30, 'parlay': 60},
+    13: {'base': 40, 'parlay': 80},
+    14: {'base': 52, 'parlay': 104},
+    15: {'base': 70, 'parlay': 140},
+    16: {'base': 95, 'parlay': 190}
 }
 
 # --- FUNCTIONS ---
 def predict_next():
-    sequence = [x for x in st.session_state.sequence if x in ['P', 'B']]  # Non-Tie outcomes
+    sequence = [x for x in st.session_state.sequence if x in ['P', 'B']]
     if len(sequence) < 2:
-        return 'B', 45.86  # Default to Banker with theoretical probability
-
-    # Get the last bigram (last 2 non-Tie outcomes)
+        return 'B', 45.86
     bigram = sequence[-2:]
-
-    # Count transitions from this bigram in the sequence
     transitions = defaultdict(int)
     for i in range(len(sequence) - 2):
         if sequence[i:i+2] == bigram:
             next_outcome = sequence[i+2]
             transitions[next_outcome] += 1
-
-    # Calculate transition probabilities
     total_transitions = sum(transitions.values())
     if total_transitions > 0:
         prob_p = (transitions['P'] / total_transitions) * 100
         prob_b = (transitions['B'] / total_transitions) * 100
     else:
-        # Use theoretical Baccarat probabilities (ignoring Ties)
-        prob_p = 44.62  # Player probability
-        prob_b = 45.86  # Banker probability
-
-    # Predict the outcome with higher probability
-    if prob_p > prob_b:
-        return 'P', prob_p
-    return 'B', prob_b
+        prob_p = 44.62
+        prob_b = 45.86
+    return ('P', prob_p) if prob_p > prob_b else ('B', prob_b)
 
 def check_target_hit():
     if st.session_state.target_mode == "Profit %":
         target_profit = st.session_state.initial_bankroll * (st.session_state.target_value / 100)
-        if st.session_state.bankroll >= st.session_state.initial_bankroll + target_profit:
-            return True
+        return st.session_state.bankroll >= st.session_state.initial_bankroll + target_profit
     else:
-        unit_profit = (st.session_state.bankroll - st.session_state.initial_bankroll) / st.session_state.base_bet
-        if unit_profit >= st.session_state.target_value:
-            return True
-    return False
+        unit_profit = (st.session_state.bankroll - st.session_state.initial_bankroll) / st.session_state.initial_base_bet
+        return unit_profit >= st.session_state.target_value
 
 def reset_session_auto():
     st.session_state.bankroll = st.session_state.initial_bankroll
@@ -168,9 +201,11 @@ def reset_session_auto():
     st.session_state.pending_bet = None
     st.session_state.t3_level = 1
     st.session_state.t3_results = []
+    st.session_state.t3_level_changes = 0
     st.session_state.parlay_step = 1
     st.session_state.parlay_wins = 0
     st.session_state.parlay_using_base = True
+    st.session_state.parlay_step_changes = 0
     st.session_state.advice = "Session reset: Target reached."
     st.session_state.history = []
     st.session_state.wins = 0
@@ -184,14 +219,33 @@ def place_result(result):
     if st.session_state.target_hit:
         reset_session_auto()
         return
-
     st.session_state.last_was_tie = (result == 'T')
-
     bet_amount = 0
+    bet_placed = False
+    selection = None
+    win = False
+
+    # Store state before processing the result
+    previous_state = {
+        "bankroll": st.session_state.bankroll,
+        "t3_level": st.session_state.t3_level,
+        "t3_results": st.session_state.t3_results.copy(),
+        "parlay_step": st.session_state.parlay_step,
+        "parlay_wins": st.session_state.parlay_wins,
+        "parlay_using_base": st.session_state.parlay_using_base,
+        "pending_bet": st.session_state.pending_bet,
+        "wins": st.session_state.wins,
+        "losses": st.session_state.losses,
+        "prediction_accuracy": st.session_state.prediction_accuracy.copy(),
+        "consecutive_losses": st.session_state.consecutive_losses,
+        "t3_level_changes": st.session_state.t3_level_changes,
+        "parlay_step_changes": st.session_state.parlay_step_changes
+    }
+
     if st.session_state.pending_bet and result != 'T':
         bet_amount, selection = st.session_state.pending_bet
         win = result == selection
-        old_bankroll = st.session_state.bankroll
+        bet_placed = True
         if win:
             if selection == 'B':
                 st.session_state.bankroll += bet_amount * 0.95
@@ -202,11 +256,13 @@ def place_result(result):
             elif st.session_state.strategy == 'Parlay16':
                 st.session_state.parlay_wins += 1
                 if st.session_state.parlay_wins == 2:
-                    st.session_state.parlay_step = 1  # Reset after 2 wins
+                    old_step = st.session_state.parlay_step
+                    st.session_state.parlay_step = 1
                     st.session_state.parlay_wins = 0
                     st.session_state.parlay_using_base = True
+                    if old_step != st.session_state.parlay_step:
+                        st.session_state.parlay_step_changes += 1
                 else:
-                    # Switch to parlay value for the current step after a win
                     st.session_state.parlay_using_base = False
             st.session_state.wins += 1
             st.session_state.prediction_accuracy[selection] += 1
@@ -216,10 +272,12 @@ def place_result(result):
             if st.session_state.strategy == 'T3':
                 st.session_state.t3_results.append('L')
             elif st.session_state.strategy == 'Parlay16':
-                st.session_state.parlay_wins = 0  # Reset wins on loss
-                # Move to next base step on loss
+                st.session_state.parlay_wins = 0
+                old_step = st.session_state.parlay_step
                 st.session_state.parlay_step = min(st.session_state.parlay_step + 1, 16)
-                st.session_state.parlay_using_base = True  # Use base value after a loss
+                st.session_state.parlay_using_base = True
+                if old_step != st.session_state.parlay_step:
+                    st.session_state.parlay_step_changes += 1
             st.session_state.losses += 1
             st.session_state.consecutive_losses += 1
             st.session_state.loss_log.append({
@@ -231,80 +289,85 @@ def place_result(result):
             if len(st.session_state.loss_log) > 50:
                 st.session_state.loss_log = st.session_state.loss_log[-50:]
         st.session_state.prediction_accuracy['total'] += 1
-
-        st.session_state.history.append({
-            "Bet": selection,
-            "Result": result,
-            "Amount": bet_amount,
-            "Win": win,
-            "T3_Level": st.session_state.t3_level if st.session_state.strategy == 'T3' else 1,
-            "T3_Results": st.session_state.t3_results.copy() if st.session_state.strategy == 'T3' else [],
-            "Parlay_Step": st.session_state.parlay_step if st.session_state.strategy == 'Parlay16' else 1
-        })
-        if len(st.session_state.history) > 1000:
-            st.session_state.history = st.session_state.history[-1000:]
-
         st.session_state.pending_bet = None
 
-    if not st.session_state.pending_bet and result != 'T':
-        st.session_state.consecutive_losses = 0
-
+    # Append to sequence
     st.session_state.sequence.append(result)
     if len(st.session_state.sequence) > 100:
         st.session_state.sequence = st.session_state.sequence[-100:]
+
+    # Store history entry for every result
+    st.session_state.history.append({
+        "Bet": selection,
+        "Result": result,
+        "Amount": bet_amount,
+        "Win": win,
+        "T3_Level": st.session_state.t3_level,
+        "T3_Results": st.session_state.t3_results.copy(),
+        "Parlay_Step": st.session_state.parlay_step,
+        "Parlay_Wins": st.session_state.parlay_wins,
+        "Parlay_Using_Base": st.session_state.parlay_using_base,
+        "Previous_State": previous_state,
+        "Bet_Placed": bet_placed
+    })
+    if len(st.session_state.history) > 1000:
+        st.session_state.history = st.session_state.history[-1000:]
 
     if check_target_hit():
         st.session_state.target_hit = True
         return
 
-    # Check confidence and bankroll before placing a bet
+    # Calculate next bet
     pred, conf = predict_next()
     if conf < 50.5:
         st.session_state.pending_bet = None
         st.session_state.advice = f"No bet (Confidence: {conf:.1f}% < 50.5%)"
     else:
-        # Calculate bet amount based on strategy
         if st.session_state.strategy == 'Flatbet':
             bet_amount = st.session_state.base_bet
         elif st.session_state.strategy == 'T3':
             bet_amount = st.session_state.base_bet * st.session_state.t3_level
         elif st.session_state.strategy == 'Parlay16':
-            # Use base or parlay value based on the state
             key = 'base' if st.session_state.parlay_using_base else 'parlay'
-            bet_amount = (st.session_state.base_bet / 10) * PARLAY_TABLE[st.session_state.parlay_step][key]
+            bet_amount = st.session_state.initial_base_bet * PARLAY_TABLE[st.session_state.parlay_step][key]
             if bet_amount > st.session_state.bankroll:
-                st.session_state.parlay_step = 1  # Reset to Step 1 if unaffordable
+                old_step = st.session_state.parlay_step
+                st.session_state.parlay_step = 1
                 st.session_state.parlay_using_base = True
-                bet_amount = (st.session_state.base_bet / 10) * PARLAY_TABLE[st.session_state.parlay_step]['base']
-        
+                if old_step != st.session_state.parlay_step:
+                    st.session_state.parlay_step_changes += 1
+                bet_amount = st.session_state.initial_base_bet * PARLAY_TABLE[st.session_state.parlay_step]['base']
         if bet_amount > st.session_state.bankroll:
             st.session_state.pending_bet = None
             st.session_state.advice = "No bet: Insufficient bankroll."
             if st.session_state.strategy == 'Parlay16':
-                st.session_state.parlay_step = 1  # Reset if can't afford bet
+                old_step = st.session_state.parlay_step
+                st.session_state.parlay_step = 1
                 st.session_state.parlay_using_base = True
+                if old_step != st.session_state.parlay_step:
+                    st.session_state.parlay_step_changes += 1
         else:
             st.session_state.pending_bet = (bet_amount, pred)
             st.session_state.advice = f"Next Bet: ${bet_amount:.0f} on {pred} ({conf:.1f}%)"
 
-    # T3 Level Adjustment (only for T3 strategy, after 3 bets)
     if st.session_state.strategy == 'T3' and len(st.session_state.t3_results) == 3:
         wins = st.session_state.t3_results.count('W')
         losses = st.session_state.t3_results.count('L')
+        old_level = st.session_state.t3_level
         if wins == 3:
-            st.session_state.t3_level = max(1, st.session_state.t3_level - 2)  # Move -2 levels
+            st.session_state.t3_level = max(1, st.session_state.t3_level - 2)
         elif wins == 2 and losses == 1:
-            st.session_state.t3_level = max(1, st.session_state.t3_level - 1)  # Move -1 level
+            st.session_state.t3_level = max(1, st.session_state.t3_level - 1)
         elif losses == 2 and wins == 1:
-            st.session_state.t3_level = st.session_state.t3_level + 1  # Move +1 level
+            st.session_state.t3_level = st.session_state.t3_level + 1
         elif losses == 3:
-            st.session_state.t3_level = st.session_state.t3_level + 2  # Move +2 levels
-        st.session_state.t3_results = []  # Reset for next sequence
+            st.session_state.t3_level = st.session_state.t3_level + 2
+        if old_level != st.session_state.t3_level:
+            st.session_state.t3_level_changes += 1
+        st.session_state.t3_results = []
 
-# --- RESULT INPUT WITH NATIVE STREAMLIT BUTTONS ---
+# --- RESULT INPUT ---
 st.subheader("Enter Result")
-
-# Custom CSS for smaller button styling
 st.markdown("""
 <style>
 div.stButton > button {
@@ -372,9 +435,7 @@ div.stButton > button[kind="undo_btn"]:hover {
 </style>
 """, unsafe_allow_html=True)
 
-# Create a 4-column layout for buttons
 col1, col2, col3, col4 = st.columns(4)
-
 with col1:
     if st.button("Player", key="player_btn"):
         place_result("P")
@@ -386,54 +447,82 @@ with col3:
         place_result("T")
 with col4:
     if st.button("Undo Last", key="undo_btn"):
-        if st.session_state.history and st.session_state.sequence:
-            st.session_state.sequence.pop()
-            last = st.session_state.history.pop()
-            if last['Win']:
-                st.session_state.wins -= 1
-                st.session_state.bankroll -= last['Amount'] if last["Bet"] == 'P' else last['Amount'] * 0.95
-                st.session_state.prediction_accuracy[last['Bet']] -= 1
-                st.session_state.consecutive_losses = 0
-                if st.session_state.strategy == 'Parlay16':
-                    st.session_state.parlay_wins = max(0, st.session_state.parlay_wins - 1)
-                    st.session_state.parlay_step = max(1, last['Parlay_Step'] - 1 if last['Parlay_Step'] > 1 else 1)
-                    st.session_state.parlay_using_base = True
-            else:
-                st.session_state.bankroll += last['Amount']
-                st.session_state.losses -= 1
-                st.session_state.consecutive_losses = max(0, st.session_state.consecutive_losses - 1)
-                if st.session_state.strategy == 'Parlay16':
-                    st.session_state.parlay_wins = 0
-                    st.session_state.parlay_step = min(st.session_state.parlay_step + 1, 16)
-                    st.session_state.parlay_using_base = True
-            st.session_state.prediction_accuracy['total'] -= 1
-            if st.session_state.strategy == 'T3':
-                st.session_state.t3_level = last['T3_Level']
-                st.session_state.t3_results = last['T3_Results']
-            else:
-                st.session_state.t3_level = 1
-                st.session_state.t3_results = []
-            st.session_state.pending_bet = None
-            st.session_state.advice = "Last entry undone."
-            st.session_state.last_was_tie = False
+        # Debug output to diagnose state
+        st.write(f"Debug: Sequence = {st.session_state.sequence}")
+        st.write(f"Debug: History length = {len(st.session_state.history)}")
+        st.write(f"Debug: Pending bet = {st.session_state.pending_bet}")
+        st.write(f"Debug: Bankroll = {st.session_state.bankroll}")
+        st.write(f"Debug: T3 Level = {st.session_state.t3_level}, Parlay Step = {st.session_state.parlay_step}")
 
-# --- DISPLAY SEQUENCE AS BEAD PLATE ---
+        if not st.session_state.sequence:
+            st.warning("No results to undo.")
+        else:
+            try:
+                # Remove the last history entry
+                if st.session_state.history:
+                    last = st.session_state.history.pop()
+                    st.write(f"Debug: Removed result = {last['Result']}")
+
+                    # Restore previous state
+                    previous_state = last['Previous_State']
+                    st.session_state.bankroll = previous_state['bankroll']
+                    st.session_state.t3_level = previous_state['t3_level']
+                    st.session_state.t3_results = previous_state['t3_results']
+                    st.session_state.parlay_step = previous_state['parlay_step']
+                    st.session_state.parlay_wins = previous_state['parlay_wins']
+                    st.session_state.parlay_using_base = previous_state['parlay_using_base']
+                    st.session_state.pending_bet = previous_state['pending_bet']
+                    st.session_state.wins = previous_state['wins']
+                    st.session_state.losses = previous_state['losses']
+                    st.session_state.prediction_accuracy = previous_state['prediction_accuracy']
+                    st.session_state.consecutive_losses = previous_state['consecutive_losses']
+                    st.session_state.t3_level_changes = previous_state['t3_level_changes']
+                    st.session_state.parlay_step_changes = previous_state['parlay_step_changes']
+
+                    # Remove last sequence entry
+                    st.session_state.sequence.pop()
+
+                    # Update loss log if a loss was undone
+                    if last['Bet_Placed'] and not last['Win'] and st.session_state.loss_log:
+                        if st.session_state.loss_log[-1]['result'] == last['Result']:
+                            st.session_state.loss_log.pop()
+
+                    # Update advice based on restored pending bet
+                    if st.session_state.pending_bet:
+                        amount, pred = st.session_state.pending_bet
+                        conf = predict_next()[1]  # Approximate confidence
+                        st.session_state.advice = f"Next Bet: ${amount:.0f} on {pred} ({conf:.1f}%)"
+                    else:
+                        st.session_state.advice = "No bet pending."
+
+                    st.session_state.last_was_tie = False
+
+                    st.success("Undone last action.")
+                    st.rerun()
+                else:
+                    # If no history, just remove sequence and reset advice
+                    st.session_state.sequence.pop()
+                    st.session_state.pending_bet = None
+                    st.session_state.advice = "No bet pending."
+                    st.session_state.last_was_tie = False
+                    st.success("Undone last result.")
+                    st.rerun()
+            except IndexError:
+                st.error("Cannot undo: No actions available.")
+            except Exception as e:
+                st.error(f"Error undoing last action: {str(e)}")
+
+# --- DISPLAY SEQUENCE ---
 st.subheader("Current Sequence (Bead Plate)")
-sequence = st.session_state.sequence[-90:] if 'sequence' in st.session_state else []  # Max 90 results (6x15)
-
-# Create a 6x15 grid
-grid = [[] for _ in range(15)]  # 15 columns
+sequence = st.session_state.sequence[-90:] if 'sequence' in st.session_state else []
+grid = [[] for _ in range(15)]
 for i, result in enumerate(sequence):
-    col_index = i // 6  # Integer division to determine column
-    if col_index < 15:  # Only fill up to 15 columns
+    col_index = i // 6
+    if col_index < 15:
         grid[col_index].append(result)
-
-# Ensure each column has exactly 6 rows, padding with empty strings if needed
 for col in grid:
     while len(col) < 6:
         col.append('')
-
-# Generate HTML for the bead plate
 bead_plate_html = "<div style='display: flex; flex-direction: row; gap: 5px; max-width: 100%; overflow-x: auto;'>"
 for col in grid:
     col_html = "<div style='display: flex; flex-direction: column; gap: 5px;'>"
@@ -449,7 +538,6 @@ for col in grid:
     col_html += "</div>"
     bead_plate_html += col_html
 bead_plate_html += "</div>"
-
 st.markdown(bead_plate_html, unsafe_allow_html=True)
 
 # --- PREDICTION DISPLAY ---
@@ -463,9 +551,9 @@ else:
         st.info(st.session_state.advice)
 
 # --- UNIT PROFIT ---
-if st.session_state.base_bet > 0 and st.session_state.initial_bankroll > 0:
+if st.session_state.initial_base_bet > 0 and st.session_state.initial_bankroll > 0:
     profit = st.session_state.bankroll - st.session_state.initial_bankroll
-    units_profit = profit / st.session_state.base_bet
+    units_profit = profit / st.session_state.initial_base_bet
     st.markdown(f"**Units Profit**: {units_profit:.2f} units (${profit:.2f})")
 else:
     st.markdown("**Units Profit**: 0.00 units ($0.00)")
@@ -476,11 +564,13 @@ st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
 st.markdown(f"**Base Bet**: ${st.session_state.base_bet:.2f}")
 strategy_status = f"**Betting Strategy**: {st.session_state.strategy}"
 if st.session_state.strategy == 'T3':
-    strategy_status += f" | T3 Level: {st.session_state.t3_level}"
+    strategy_status += f" | T3 Level: {st.session_state.t3_level} | Level Changes: {st.session_state.t3_level_changes}"
 elif st.session_state.strategy == 'Parlay16':
-    strategy_status += f" | Parlay Step: {st.session_state.parlay_step}/16 | Consecutive Wins: {st.session_state.parlay_wins}"
+    strategy_status += f" | Parlay Step: {st.session_state.parlay_step}/16 | Step Changes: {st.session_state.parlay_step_changes} | Consecutive Wins: {st.session_state.parlay_wins}"
 st.markdown(strategy_status)
 st.markdown(f"**Wins**: {st.session_state.wins} | **Losses**: {st.session_state.losses}")
+online_users = track_user_session_file()
+st.markdown(f"**Online Users**: {online_users}")
 
 # --- PREDICTION ACCURACY ---
 st.subheader("Prediction Accuracy")
@@ -510,10 +600,10 @@ if st.session_state.history:
     n = st.slider("Show last N bets", 5, 50, 10)
     st.dataframe([
         {
-            "Bet": h["Bet"],
+            "Bet": h["Bet"] if h["Bet"] else "-",
             "Result": h["Result"],
-            "Amount": f"${h['Amount']:.0f}",
-            "Outcome": "Win" if h["Win"] else "Loss",
+            "Amount": f"${h['Amount']:.0f}" if h["Bet_Placed"] else "-",
+            "Outcome": "Win" if h["Win"] else "Loss" if h["Bet_Placed"] else "-",
             "T3_Level": h["T3_Level"] if st.session_state.strategy == 'T3' else "-",
             "Parlay_Step": h["Parlay_Step"] if st.session_state.strategy == 'Parlay16' else "-"
         }
