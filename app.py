@@ -88,13 +88,13 @@ def initialize_session_state():
         'insights': {},
         'pattern_volatility': 0.0,
         'pattern_success': defaultdict(int),
-        'pattern_attempts': defaultdict(int)
+        'pattern_attempts': defaultdict(int),
+        'safety_net_percentage': 20.0
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
-    # Validate strategy
     if st.session_state.strategy not in STRATEGIES:
         st.session_state.strategy = 'T3'
 
@@ -123,7 +123,8 @@ def reset_session():
         'insights': {},
         'pattern_volatility': 0.0,
         'pattern_success': defaultdict(int),
-        'pattern_attempts': defaultdict(int)
+        'pattern_attempts': defaultdict(int),
+        'safety_net_percentage': 20.0
     })
 
 # --- Prediction Logic ---
@@ -208,7 +209,6 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
     prob_p = prob_b = total_weight = 0
     insights = {}
 
-    # Bigram contribution
     if len(recent_sequence) >= 2:
         bigram = tuple(recent_sequence[-2:])
         total = sum(bigram_transitions[bigram].values())
@@ -220,7 +220,6 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
             total_weight += weights['bigram']
             insights['Bigram'] = f"{weights['bigram']*100:.0f}% (P: {p_prob*100:.1f}%, B: {b_prob*100:.1f}%)"
 
-    # Trigram contribution
     if len(recent_sequence) >= 3:
         trigram = tuple(recent_sequence[-3:])
         total = sum(trigram_transitions[trigram].values())
@@ -232,7 +231,6 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
             total_weight += weights['trigram']
             insights['Trigram'] = f"{weights['trigram']*100:.0f}% (P: {p_prob*100:.1f}%, B: {b_prob*100:.1f}%)"
 
-    # Streak contribution
     if streak_count >= 2:
         streak_prob = min(0.7, 0.5 + streak_count * 0.05) * (0.8 if streak_count > 4 else 1.0)
         current_streak = recent_sequence[-1]
@@ -245,7 +243,6 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
         total_weight += weights['streak']
         insights['Streak'] = f"{weights['streak']*100:.0f}% ({streak_count} {current_streak})"
 
-    # Chop contribution
     if chop_count >= 2:
         next_pred = 'B' if recent_sequence[-1] == 'P' else 'P'
         if next_pred == 'P':
@@ -257,7 +254,6 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
         total_weight += weights['chop']
         insights['Chop'] = f"{weights['chop']*100:.0f}% ({chop_count} alternations)"
 
-    # Double contribution
     if double_count >= 1 and len(recent_sequence) >= 2 and recent_sequence[-1] == recent_sequence[-2]:
         double_prob = 0.6
         if recent_sequence[-1] == 'P':
@@ -269,19 +265,16 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
         total_weight += weights['double']
         insights['Double'] = f"{weights['double']*100:.0f}% ({recent_sequence[-1]}{recent_sequence[-1]})"
 
-    # Normalize probabilities
     if total_weight > 0:
         prob_p = (prob_p / total_weight) * 100
         prob_b = (prob_b / total_weight) * 100
     else:
         prob_p, prob_b = 44.62, 45.86
 
-    # Adjust for Banker commission
     if abs(prob_p - prob_b) < 2:
         prob_p += 0.5
         prob_b -= 0.5
 
-    # Pattern transition adjustment
     current_pattern = (
         'streak' if streak_count >= 2 else
         'chop' if chop_count >= 2 else
@@ -295,7 +288,6 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
         prob_b = 0.9 * prob_b + 0.1 * b_prob * 100
         insights['Pattern Transition'] = f"10% (P: {p_prob*100:.1f}%, B: {b_prob*100:.1f}%)"
 
-    # Adaptive confidence threshold
     recent_accuracy = (st.session_state.prediction_accuracy['P'] + st.session_state.prediction_accuracy['B']) / max(st.session_state.prediction_accuracy['total'], 1)
     threshold = 41.0 + (st.session_state.consecutive_losses * 0.5) - (recent_accuracy * 1.0)
     threshold = min(max(threshold, 41.0), 51.0)
@@ -362,7 +354,7 @@ def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optio
                 st.session_state.parlay_step_changes += 1
             bet_amount = st.session_state.initial_base_bet * PARLAY_TABLE[st.session_state.parlay_step]['base']
 
-    safe_bankroll = st.session_state.initial_bankroll * 0.2
+    safe_bankroll = st.session_state.initial_bankroll * (st.session_state.safety_net_percentage / 100)
     if (bet_amount > st.session_state.bankroll or
         st.session_state.bankroll - bet_amount < safe_bankroll or
         bet_amount > st.session_state.bankroll * 0.05):
@@ -404,7 +396,8 @@ def place_result(result: str):
         "parlay_step_changes": st.session_state.parlay_step_changes,
         "pattern_volatility": st.session_state.pattern_volatility,
         "pattern_success": st.session_state.pattern_success.copy(),
-        "pattern_attempts": st.session_state.pattern_attempts.copy()
+        "pattern_attempts": st.session_state.pattern_attempts.copy(),
+        "safety_net_percentage": st.session_state.safety_net_percentage
     }
 
     if st.session_state.pending_bet and result != 'T':
@@ -446,7 +439,7 @@ def place_result(result: str):
                     st.session_state.parlay_step_changes += 1
             st.session_state.losses += 1
             st.session_state.consecutive_losses += 1
-            _, conf, _ = predict_next()  # Get confidence directly
+            _, conf, _ = predict_next()
             st.session_state.loss_log.append({
                 'sequence': st.session_state.sequence[-10:],
                 'prediction': selection,
@@ -508,6 +501,11 @@ def render_setup_form():
         )
         target_mode = st.radio("Target Type", ["Profit %", "Units"], index=0, horizontal=True)
         target_value = st.number_input("Target Value", min_value=1.0, value=float(st.session_state.target_value), step=1.0)
+        safety_net_percentage = st.number_input(
+            "Safety Net Percentage (%)",
+            min_value=0.0, max_value=50.0, value=st.session_state.safety_net_percentage, step=5.0,
+            help="Percentage of initial bankroll to keep as a safety net after each bet."
+        )
         start_clicked = st.form_submit_button("Start Session")
 
         if start_clicked:
@@ -547,7 +545,8 @@ def render_setup_form():
                     'insights': {},
                     'pattern_volatility': 0.0,
                     'pattern_success': defaultdict(int),
-                    'pattern_attempts': defaultdict(int)
+                    'pattern_attempts': defaultdict(int),
+                    'safety_net_percentage': safety_net_percentage
                 })
                 st.success(f"Session started with {betting_strategy} strategy!")
 
@@ -669,6 +668,7 @@ def render_status():
     st.subheader("Status")
     st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
     st.markdown(f"**Base Bet**: ${st.session_state.base_bet:.2f}")
+    st.markdown(f"**Safety Net Percentage**: {st.session_state.safety_net_percentage:.1f}%")
     strategy_status = f"**Betting Strategy**: {st.session_state.strategy}"
     if st.session_state.strategy == 'T3':
         strategy_status += f" | T3 Level: {st.session_state.t3_level} | Level Changes: {st.session_state.t3_level_changes}"
