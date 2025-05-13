@@ -21,6 +21,18 @@ HISTORY_LIMIT = 1000
 LOSS_LOG_LIMIT = 50
 WINDOW_SIZE = 50
 
+# --- File Creation ---
+def create_required_files():
+    """Create online_users.txt and simulation_log.txt if they don't exist."""
+    for file_name in [SESSION_FILE, SIMULATION_LOG]:
+        if not os.path.exists(file_name):
+            try:
+                with open(file_name, 'w', encoding='utf-8') as f:
+                    f.write("")  # Create an empty file
+                print(f"Created {file_name}")
+            except PermissionError:
+                st.error(f"Unable to create {file_name}. Check directory permissions.")
+
 # --- Session Tracking ---
 def track_user_session() -> int:
     """Track active user sessions using a file-based approach."""
@@ -490,7 +502,7 @@ def predict_next() -> Tuple[Optional[str], float, Dict]:
         }
 
     if prob_p > prob_b and prob_p >= threshold:
-        prediction = 'P'
+        prediction = 'P describes
         confidence = prob_p
     elif prob_b >= threshold:
         prediction = 'B'
@@ -610,7 +622,7 @@ def place_result(result: str):
         "safety_net_percentage": st.session_state.safety_net_percentage,
         "consecutive_wins": st.session_state.consecutive_wins,
         "last_win_confidence": st.session_state.last_win_confidence,
-        "insights": st.session_state.insights.copy(),  # Store insights for history
+        "insights": st.session_state.insights.copy(),
     }
 
     if st.session_state.pending_bet and result != 'T':
@@ -725,6 +737,7 @@ def simulate_shoe(num_hands: int = 80) -> Dict:
         sequence.append(outcome)
         pred, conf, insights = predict_next()
         if pred and outcome in ['P', 'B']:
+ causas
             total += 1
             if pred == outcome:
                 correct += 1
@@ -972,7 +985,7 @@ def render_insights():
                     st.markdown(f"- **Alternations**: {data['chop_count']}")
                     st.markdown(f"- **Next Predicted**: {data['next_pred']}")
                 elif pattern == 'Double':
-                    st.markdown(f"- **Double Type**: {data['double_type']}{data['double_type']}")
+                    st.markdown(f"- **Double Type**: {data['double_type']}")
                 st.markdown(f"- **Reliability**: {data['reliability']:.1f}% (based on sample size)")
                 st.markdown(f"- **Recent Performance**: {data['recent_performance']:.1f}% (last 10 bets)")
 
@@ -1011,8 +1024,7 @@ def render_status():
     st.subheader("Status")
     st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
     st.markdown(f"**Base Bet**: ${st.session_state.base_bet:.2f}")
-    st.markdown(f"**Safety Net Percentage**: {st.session_state.safety_net_percentage Politely and create two files: **online_users.txt** and **simulation_log.txt** in the same directory as your script.
-
+    st.markdown(f"**Safety Net Percentage**: {st.session_state.safety_net_percentage}%")
     st.markdown(f"**Online Users**: {track_user_session()}")
     strategy_status = f"**Betting Strategy**: {st.session_state.strategy}"
     if st.session_state.strategy == 'T3':
@@ -1117,9 +1129,10 @@ def render_simulation():
 def main():
     """Main application function."""
     st.set_page_config(layout="centered", page_title="MANG BACCARAT GROUP")
-    st.title("MANG BACCARAT GROUP")
+    create_required_files()  # Ensure files are created
     initialize_session_state()
 
+    st.title("MANG BACCARAT GROUP")
     render_setup_form()
     render_result_input()
     render_bead_plate()
