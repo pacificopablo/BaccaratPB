@@ -396,16 +396,20 @@ def update_t3_level():
 def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optional[str]]:
     """Calculate the next bet amount, resetting level/step if risk is too high."""
     if st.session_state.consecutive_losses >= 3 and conf < 45.0:
+        st.warning(f"Paused betting: {st.session_state.consecutive_losses} consecutive losses, confidence {conf:.1f}% < 45%")
         return None, f"No bet: Paused after {st.session_state.consecutive_losses} losses"
     if st.session_state.pattern_volatility > 0.6:
+        st.warning(f"Paused betting: High pattern volatility {st.session_state.pattern_volatility:.2f}")
         return None, f"No bet: High pattern volatility"
     if pred is None or conf < 32.0:
+        st.warning(f"Paused betting: Confidence {conf:.1f}% < 32% or no prediction")
         return None, f"No bet: Confidence too low"
 
     if st.session_state.strategy == 'Z1003.1':
         if st.session_state.z1003_loss_count >= 3 and not st.session_state.z1003_continue:
+            st.warning("Paused betting: Z1003.1 stopped after three losses")
             return None, "No bet: Stopped after three losses (Z1003.1 rule)"
-        bet_amount = st.session_state.base_bet + (st.session_state.z1003_loss_count * 100)
+        bet_amount = st.session_state.base_bet + (st.session_state.z1003_loss_count * 0.10)
     elif st.session_state.strategy == 'Flatbet':
         bet_amount = st.session_state.base_bet
     elif st.session_state.strategy == 'T3':
@@ -416,34 +420,14 @@ def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optio
         st.session_state.parlay_peak_step = max(st.session_state.parlay_peak_step, st.session_state.parlay_step)
 
     safe_bankroll = st.session_state.initial_bankroll * (st.session_state.safety_net_percentage / 100)
-    if (bet_amount > st.session_state.bankroll or
-        st.session_state.bankroll - bet_amount < safe_bankroll * 0.5 or
-        bet_amount > st.session_state.bankroll * 0.10):
-        if st.session_state.strategy == 'T3':
-            old_level = st.session_state.t3_level
-            st.session_state.t3_level = 1
-            if old_level != st.session_state.t3_level:
-                st.session_state.t3_level_changes += 1
-            st.session_state.t3_peak_level = max(st.session_state.t3_peak_level, old_level)
-            bet_amount = st.session_state.base_bet
-        elif st.session_state.strategy == 'Parlay16':
-            old_step = st.session_state.parlay_step
-            st.session_state.parlay_step = 1
-            st.session_state.parlay_using_base = True
-            if old_step != st.session_state.parlay_step:
-                st.session_state.parlay_step_changes += 1
-            st.session_state.parlay_peak_step = max(st.session_state.parlay_peak_step, old_step)
-            bet_amount = st.session_state.initial_base_bet * PARLAY_TABLE[st.session_state.parlay_step]['base']
-        elif st.session_state.strategy == 'Z1003.1':
-            old_loss_count = st.session_state.z1003_loss_count
-            st.session_state.z1003_loss_count = 0
-            st.session_state.z1003_bet_factor = 1.0
-            if old_loss_count != st.session_state.z1003_loss_count:
-                st.session_state.z1003_level_changes += 1
-            bet_amount = st.session_state.base_bet
-        return None, "No bet: Risk too high for current bankroll. Level/step reset to 1."
+    if bet_amount > st.session_state.bankroll:
+        st.warning(f"Bet amount ${bet_amount:.2f} exceeds bankroll ${st.session_state.bankroll:.2f}")
+        return None, "No bet: Bet amount exceeds bankroll"
+    if st.session_state.bankroll - bet_amount < safe_bankroll * 0.5:
+        st.warning(f"Bet would reduce bankroll below safety net: ${st.session_state.bankroll:.2f} - ${bet_amount:.2f} < ${safe_bankroll * 0.5:.2f}")
+        return None, "No bet: Below safety net threshold"
 
-    return bet_amount, f"Next Bet: ${bet_amount:.0f} on {pred}"
+    return bet_amount, f"Next Bet: ${bet_amount:.2f} on {pred}"
 
 def place_result(result: str):
     """Process a game result and update session state."""
@@ -637,8 +621,8 @@ def render_setup_form():
     """Render the setup form for session configuration."""
     st.subheader("Setup")
     with st.form("setup_form"):
-        bankroll = st.number_input("Enter Bankroll ($)", min_value=0.0, value=st.session_state.bankroll, step=10.0)
-        base_bet = st.number_input("Enter Base Bet ($)", min_value=0.0, value=st.session_state.base_bet, step=1.0)
+        bankroll = st.number_input("Enter Bankroll ($)", min_value=0.0, value=st.session_state.bankroll or 10.0, step=0.01, format="%.2f")
+        base_bet = st.number_input("Enter Base Bet ($)", min_value=0.01, value=st.session_state.base_bet or 0.20, step=0.01, format="%.2f")
         betting_strategy = st.selectbox(
             "Choose Betting Strategy", STRATEGIES,
             index=STRATEGIES.index(st.session_state.strategy),
@@ -656,8 +640,8 @@ def render_setup_form():
         if start_clicked:
             if bankroll <= 0:
                 st.error("Bankroll must be positive.")
-            elif base_bet <= 0:
-                st.error("Base bet must be positive.")
+            elif base_bet < 0.01:
+                st.error("Base bet must be at least $0.01.")
             elif base_bet > bankroll:
                 st.error("Base bet cannot exceed bankroll.")
             else:
@@ -755,7 +739,7 @@ def render_result_input():
                         if st.session_state.pending_bet:
                             amount, pred = st.session_state.pending_bet
                             conf = predict_next()[1]
-                            st.session_state.advice = f"Next Bet: ${amount:.0f} on {pred}"
+                            st.session_state.advice = f"Next Bet: ${amount:.2f} on {pred}"
                         else:
                             st.session_state.advice = "No bet pending."
                         st.session_state.last_was_tie = False
@@ -802,8 +786,11 @@ def render_prediction():
     """Render the current prediction and advice."""
     if st.session_state.pending_bet:
         amount, side = st.session_state.pending_bet
-        color = 'blue' if side == 'P' else 'red'
-        st.markdown(f"<h4 style='color:{color};'>Prediction: {side} | Bet: ${amount:.0f}</h4>", unsafe_allow_html=True)
+        if amount is not None:
+            color = 'blue' if side == 'P' else 'red'
+            st.markdown(f"<h4 style='color:{color};'>Prediction: {side} | Bet: ${amount:.2f}</h4>", unsafe_allow_html=True)
+        else:
+            st.info("No bet placed: Check conditions (e.g., bankroll, risk limits).")
     elif not st.session_state.target_hit:
         st.info(st.session_state.advice)
 
@@ -887,7 +874,7 @@ def render_history():
             {
                 "Bet": h["Bet"] if h["Bet"] else "-",
                 "Result": h["Result"],
-                "Amount": f"${h['Amount']:.0f}" if h["Bet_Placed"] else "-",
+                "Amount": f"${h['Amount']:.2f}" if h["Bet_Placed"] else "-",
                 "Outcome": "Win" if h["Win"] else "Loss" if h["Bet_Placed"] else "-",
                 "T3_Level": h["T3_Level"] if st.session_state.strategy == 'T3' else "-",
                 "Parlay_Step": h["Parlay_Step"] if st.session_state.strategy == 'Parlay16' else "-",
@@ -902,7 +889,7 @@ def render_export():
     if st.button("Download Session Data"):
         csv_data = "Bet,Result,Amount,Win,T3_Level,Parlay_Step,Z1003_Loss_Count\n"
         for h in st.session_state.history:
-            csv_data += f"{h['Bet'] or '-'},{h['Result']},${h['Amount']:.0f},{h['Win']},{h['T3_Level']},{h['Parlay_Step']},{h['Z1003_Loss_Count']}\n"
+            csv_data += f"{h['Bet'] or '-'},{h['Result']},${h['Amount']:.2f},{h['Win']},{h['T3_Level']},{h['Parlay_Step']},{h['Z1003_Loss_Count']}\n"
         st.download_button("Download CSV", csv_data, "session_data.csv", "text/csv")
 
 def render_simulation():
