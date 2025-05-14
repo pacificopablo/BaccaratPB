@@ -825,13 +825,15 @@ def render_prediction():
         st.info(st.session_state.advice)
 
 def render_insights():
-    """Render prediction insights and volatility warnings."""
-    st.subheader("Prediction Insights")
-    if st.session_state.insights:
-        for factor, contribution in st.session_state.insights.items():
-            st.markdown(f"**{factor}**: {contribution}")
-    if st.session_state.pattern_volatility > 0.5:
-        st.warning(f"High Pattern Volatility: {st.session_state.pattern_volatility:.2f} (Betting paused)")
+    """Render prediction insights and volatility warnings in a collapsible section."""
+    with st.expander("Prediction Insights", expanded=True):
+        if st.session_state.insights:
+            for factor, contribution in st.session_state.insights.items():
+                st.markdown(f"**{factor}**: {contribution}")
+        else:
+            st.write("No insights available yet.")
+        if st.session_state.pattern_volatility > 0.5:
+            st.warning(f"High Pattern Volatility: {st.session_state.pattern_volatility:.2f} (Betting paused)")
 
 def render_status():
     """Render session status information."""
@@ -949,8 +951,8 @@ def main():
     render_result_input()
     render_bead_plate()
     render_prediction()
-    render_insights()
     render_status()
+    render_insights()
     render_accuracy()
     render_loss_log()
     render_history()
