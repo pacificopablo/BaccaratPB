@@ -1,4 +1,4 @@
-import streamlit as st
+Ffffffffimport streamlit as st
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
