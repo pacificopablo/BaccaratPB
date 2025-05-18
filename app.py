@@ -21,12 +21,12 @@ SEQUENCE_LIMIT = 100
 HISTORY_LIMIT = 1000
 LOSS_LOG_LIMIT = 50
 WINDOW_SIZE = 50
+T3_MAX_LEVEL = 5
 
 # --- CSS for Professional Styling ---
 def apply_custom_css():
     st.markdown("""
     <style>
-    /* General Styling */
     body {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         background-color: #f7f9fc;
@@ -94,7 +94,6 @@ def apply_custom_css():
         font-size: 14px;
         color: #2d3748;
     }
-    /* Result Buttons */
     .result-button-player {
         background: linear-gradient(to bottom, #3182ce, #2b6cb0);
         color: white;
@@ -123,14 +122,12 @@ def apply_custom_css():
     .result-button-undo:hover {
         background: linear-gradient(to bottom, #a0aec0, #718096);
     }
-    /* Bead Plate */
     .bead-plate {
         background-color: #edf2f7;
         padding: 10px;
         border-radius: 8px;
         overflow-x: auto;
     }
-    /* Responsive Design */
     @media (max-width: 768px) {
         .stApp {
             padding: 10px;
@@ -221,7 +218,11 @@ def initialize_session_state():
         'pattern_success': defaultdict(int),
         'pattern_attempts': defaultdict(int),
         'safety_net_percentage': 10.0,
-        'safety_net_enabled': True
+        'safety_net_enabled': True,
+        'profit_lock': 0.0,
+        'stop_loss_enabled': False,
+        'stop_loss_percentage': 50.0,
+        'profit_lock_notification': None
     }
     defaults['pattern_success']['fourgram'] = 0
     defaults['pattern_attempts']['fourgram'] = 0
@@ -265,7 +266,11 @@ def reset_session():
         'pattern_success': defaultdict(int),
         'pattern_attempts': defaultdict(int),
         'safety_net_percentage': 10.0,
-        'safety_net_enabled': True
+        'safety_net_enabled': True,
+        'profit_lock': st.session_state.initial_bankroll,
+        'stop_loss_enabled': False,
+        'stop_loss_percentage': 50.0,
+        'profit_lock_notification': None
     })
 
 # --- Prediction Logic ---
@@ -356,7 +361,6 @@ def calculate_weights(streak_count: int, chop_count: int, double_count: int, sho
 
 def predict_next() -> Tuple[Optional[str], float, Dict]:
     sequence = [x for x in st.session_state.sequence if x in ['P', 'B', 'T']]
-    # Skip prediction until the 6th hand (sequence length >= 5)
     if len(sequence) < 5:
         return None, 0.0, {'Status': 'Waiting for 6th hand'}
     recent_sequence = sequence[-WINDOW_SIZE:]
@@ -494,7 +498,6 @@ def update_t3_level():
         st.session_state.t3_results = []
 
 def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optional[str]]:
-    # Skip betting until the 6th hand (sequence length >= 5)
     if len(st.session_state.sequence) < 5:
         return None, "No bet: Waiting for 6th hand"
     if st.session_state.consecutive_losses >= 3 and conf < 45.0:
@@ -503,6 +506,34 @@ def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optio
         return None, f"No bet: High pattern volatility"
     if pred is None or conf < 32.0:
         return None, f"No bet: Confidence too low"
+
+    # Check profit lock and reset strategy if reached
+    if st.session_state.bankroll > st.session_state.profit_lock:
+        old_level = st.session_state.t3_level
+        st.session_state.profit_lock_notification = f"Profit lock reached at bankroll ${st.session_state.bankroll:.2f}. Resetting T3 strategy from level {old_level} to level 1."
+        if st.session_state.strategy == 'T3':
+            st.session_state.t3_level = 1
+            st.session_state.t3_results = []
+            st.session_state.t3_level_changes += 1
+        elif st.session_state.strategy == 'Parlay16':
+            st.session_state.parlay_step = 1
+            st.session_state.parlay_wins = 0
+            st.session_state.parlay_using_base = True
+            st.session_state.parlay_step_changes += 1
+        elif st.session_state.strategy == 'Z1003.1':
+            st.session_state.z1003_loss_count = 0
+            st.session_state.z1003_bet_factor = 1.0
+            st.session_state.z1003_continue = False
+            st.session_state.z1003_level_changes += 1
+        st.session_state.profit_lock = st.session_state.bankroll  # Update to new peak
+
+    # Check stop-loss condition
+    if st.session_state.stop_loss_enabled:
+        stop_loss_threshold = st.session_state.initial_bankroll * (st.session_state.stop_loss_percentage / 100)
+        if st.session_state.bankroll <= stop_loss_threshold:
+            return None, f"No bet: Stop-loss triggered at {st.session_state.stop_loss_percentage}% of initial bankroll"
+
+    # Calculate bet amount
     if st.session_state.strategy == 'Z1003.1':
         if st.session_state.z1003_loss_count >= 3 and not st.session_state.z1003_continue:
             return None, "No bet: Stopped after three losses (Z1003.1 rule)"
@@ -515,6 +546,8 @@ def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optio
         key = 'base' if st.session_state.parlay_using_base else 'parlay'
         bet_amount = st.session_state.initial_base_bet * PARLAY_TABLE[st.session_state.parlay_step][key]
         st.session_state.parlay_peak_step = max(st.session_state.parlay_peak_step, st.session_state.parlay_step)
+
+    # Safety net check
     if st.session_state.safety_net_enabled:
         safe_bankroll = st.session_state.initial_bankroll * (st.session_state.safety_net_percentage / 100)
         if (bet_amount > st.session_state.bankroll or
@@ -523,10 +556,10 @@ def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optio
             if st.session_state.strategy == 'T3':
                 old_level = st.session_state.t3_level
                 st.session_state.t3_level = 1
+                st.session_state.t3_results = []
                 if old_level != st.session_state.t3_level:
                     st.session_state.t3_level_changes += 1
                 st.session_state.t3_peak_level = max(st.session_state.t3_peak_level, old_level)
-                bet_amount = st.session_state.base_bet
             elif st.session_state.strategy == 'Parlay16':
                 old_step = st.session_state.parlay_step
                 st.session_state.parlay_step = 1
@@ -534,7 +567,6 @@ def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optio
                 if old_step != st.session_state.parlay_step:
                     st.session_state.parlay_step_changes += 1
                 st.session_state.parlay_peak_step = max(st.session_state.parlay_peak_step, old_step)
-                bet_amount = st.session_state.initial_base_bet * PARLAY_TABLE[st.session_state.parlay_step]['base']
             elif st.session_state.strategy == 'Z1003.1':
                 old_loss_count = st.session_state.z1003_loss_count
                 st.session_state.z1003_loss_count = 0
@@ -543,6 +575,7 @@ def calculate_bet_amount(pred: str, conf: float) -> Tuple[Optional[float], Optio
                     st.session_state.z1003_level_changes += 1
                 bet_amount = st.session_state.base_bet
             return None, "No bet: Risk too high for current bankroll. Level/step reset to 1."
+
     return bet_amount, f"Next Bet: ${bet_amount:.2f} on {pred}"
 
 def place_result(result: str):
@@ -576,7 +609,10 @@ def place_result(result: str):
         "pattern_success": st.session_state.pattern_success.copy(),
         "pattern_attempts": st.session_state.pattern_attempts.copy(),
         "safety_net_percentage": st.session_state.safety_net_percentage,
-        "safety_net_enabled": st.session_state.safety_net_enabled
+        "safety_net_enabled": st.session_state.safety_net_enabled,
+        "profit_lock": st.session_state.profit_lock,
+        "stop_loss_enabled": st.session_state.stop_loss_enabled,
+        "stop_loss_percentage": st.session_state.stop_loss_percentage
     }
     if st.session_state.pending_bet and result != 'T':
         bet_amount, selection = st.session_state.pending_bet
@@ -643,6 +679,8 @@ def place_result(result: str):
                     st.session_state.pattern_attempts[pattern] += 1
         st.session_state.prediction_accuracy['total'] += 1
         st.session_state.pending_bet = None
+        # Update profit lock after bet resolution
+        st.session_state.profit_lock = max(st.session_state.profit_lock, st.session_state.bankroll)
     st.session_state.sequence.append(result)
     if len(st.session_state.sequence) > SEQUENCE_LIMIT:
         st.session_state.sequence = st.session_state.sequence[-SEQUENCE_LIMIT:]
@@ -719,6 +757,75 @@ def simulate_shoe(num_hands: int = 80) -> Dict:
         st.error("Unable to write to simulation log.")
     return result
 
+def simulate_to_target(max_hands: int = 1000) -> Dict:
+    # Initialize session
+    st.session_state.update({
+        'bankroll': 1000.0,
+        'base_bet': 1.0,
+        'initial_base_bet': 1.0,
+        'strategy': 'T3',
+        'sequence': [],
+        'pending_bet': None,
+        't3_level': 1,
+        't3_results': [],
+        't3_level_changes': 0,
+        't3_peak_level': 1,
+        'parlay_step': 1,
+        'parlay_wins': 0,
+        'parlay_using_base': True,
+        'parlay_step_changes': 0,
+        'parlay_peak_step': 1,
+        'z1003_loss_count': 0,
+        'z1003_bet_factor': 1.0,
+        'z1003_continue': False,
+        'z1003_level_changes': 0,
+        'advice': "",
+        'history': [],
+        'wins': 0,
+        'losses': 0,
+        'target_mode': 'Profit %',
+        'target_value': 10.0,
+        'initial_bankroll': 1000.0,
+        'target_hit': False,
+        'prediction_accuracy': {'P': 0, 'B': 0, 'total': 0},
+        'consecutive_losses': 0,
+        'loss_log': [],
+        'last_was_tie': False,
+        'insights': {},
+        'pattern_volatility': 0.0,
+        'pattern_success': defaultdict(int),
+        'pattern_attempts': defaultdict(int),
+        'safety_net_percentage': 10.0,
+        'safety_net_enabled': False,
+        'profit_lock': 1000.0,
+        'stop_loss_enabled': False,
+        'stop_loss_percentage': 50.0,
+        'profit_lock_notification': None
+    })
+    st.session_state.pattern_success['fourgram'] = 0
+    st.session_state.pattern_attempts['fourgram'] = 0
+
+    # Simulate hands
+    hand_count = 0
+    while hand_count < max_hands and not st.session_state.target_hit:
+        outcome = np.random.choice(['P', 'B', 'T'], p=[0.4462, 0.4586, 0.0952])
+        place_result(outcome)
+        hand_count += 1
+        if st.session_state.bankroll <= 0:
+            break
+
+    # Collect results
+    result = {
+        'target_hit': st.session_state.target_hit,
+        'bankroll': st.session_state.bankroll,
+        'profit_lock': st.session_state.profit_lock,
+        'wins': st.session_state.wins,
+        'losses': st.session_state.losses,
+        'history': st.session_state.history,
+        'sequence': st.session_state.sequence
+    }
+    return result
+
 # --- UI Components ---
 def render_setup_form():
     with st.expander("Session Setup", expanded=st.session_state.bankroll == 0):
@@ -745,6 +852,18 @@ def render_setup_form():
                 safety_net_percentage = st.number_input(
                     "Safety Net Percentage (%)",
                     min_value=0.0, max_value=50.0, value=st.session_state.safety_net_percentage, step=5.0
+                )
+            stop_loss_enabled = st.checkbox(
+                "Enable Stop-Loss",
+                value=st.session_state.stop_loss_enabled,
+                help="Stops betting if bankroll falls below the specified percentage of initial bankroll."
+            )
+            stop_loss_percentage = st.session_state.stop_loss_percentage
+            if stop_loss_enabled:
+                stop_loss_percentage = st.number_input(
+                    "Stop-Loss Percentage (%)",
+                    min_value=10.0, max_value=90.0, value=st.session_state.stop_loss_percentage, step=1.0,
+                    help="Set the percentage of initial bankroll below which betting will stop (e.g., 50% means stop if bankroll falls below 50% of initial)."
                 )
             if st.form_submit_button("Start Session"):
                 if bankroll <= 0:
@@ -775,7 +894,6 @@ def render_setup_form():
                         'z1003_continue': False,
                         'z1003_level_changes': 0,
                         'advice': "",
-                        'return_to_start': False,
                         'history': [],
                         'wins': 0,
                         'losses': 0,
@@ -792,7 +910,11 @@ def render_setup_form():
                         'pattern_success': defaultdict(int),
                         'pattern_attempts': defaultdict(int),
                         'safety_net_percentage': safety_net_percentage,
-                        'safety_net_enabled': safety_net_enabled
+                        'safety_net_enabled': safety_net_enabled,
+                        'profit_lock': bankroll,
+                        'stop_loss_enabled': stop_loss_enabled,
+                        'stop_loss_percentage': stop_loss_percentage,
+                        'profit_lock_notification': None
                     })
                     st.session_state.pattern_success['fourgram'] = 0
                     st.session_state.pattern_attempts['fourgram'] = 0
@@ -874,6 +996,9 @@ def render_bead_plate():
 
 def render_prediction():
     with st.expander("Prediction", expanded=True):
+        if st.session_state.profit_lock_notification:
+            st.success(st.session_state.profit_lock_notification)
+            st.session_state.profit_lock_notification = None
         if st.session_state.pending_bet:
             amount, side = st.session_state.pending_bet
             color = '#3182ce' if side == 'P' else '#e53e3e'
@@ -894,9 +1019,12 @@ def render_status():
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"**Bankroll**: ${st.session_state.bankroll:.2f}")
+            st.markdown(f"**Profit Lock**: ${st.session_state.profit_lock:.2f}")
             st.markdown(f"**Base Bet**: ${st.session_state.base_bet:.2f}")
             st.markdown(f"**Safety Net**: {'Enabled' if st.session_state.safety_net_enabled else 'Disabled'}"
                         f"{' | ' + str(st.session_state.safety_net_percentage) + '%' if st.session_state.safety_net_enabled else ''}")
+            st.markdown(f"**Stop-Loss**: {'Enabled' if st.session_state.stop_loss_enabled else 'Disabled'}"
+                        f"{' | ' + str(st.session_state.stop_loss_percentage) + '%' if st.session_state.stop_loss_enabled else ''}")
         with col2:
             strategy_status = f"**Strategy**: {st.session_state.strategy}"
             if st.session_state.strategy == 'T3':
@@ -987,6 +1115,23 @@ def render_simulation():
                 attempts = result['pattern_attempts'][pattern]
                 st.write(f"{pattern}: {success}/{attempts} ({success/attempts*100:.1f}%)" if attempts > 0 else f"{pattern}: 0/0 (0%)")
             st.write("Results logged to simulation_log.txt")
+        if st.button("Simulate to Target Profit"):
+            result = simulate_to_target()
+            st.write(f"**Simulation to Target Results**")
+            st.write(f"Target Reached: {'Yes' if result['target_hit'] else 'No'}")
+            st.write(f"Final Bankroll: ${result['bankroll']:.2f}")
+            st.write(f"Profit Lock: ${result['profit_lock']:.2f}")
+            st.write(f"Hands Played: {len(result['history'])}")
+            st.write(f"Wins: {result['wins']} | Losses: {result['losses']}")
+            st.write("**Last 10 Bets**:")
+            for h in result['history'][-10:]:
+                st.write(f"Bet: {h['Bet'] or '-'}, Result: {h['Result']}, Amount: ${h['Amount']:.2f}, "
+                        f"Outcome: {'Win' if h['Win'] else 'Loss' if h['Bet_Placed'] else '-'}, "
+                        f"T3 Level: {h['T3_Level']}")
+            csv_data = "Bet,Result,Amount,Win,T3_Level,Parlay_Step,Z1003_Loss_Count\n"
+            for h in result['history']:
+                csv_data += f"{h['Bet'] or '-'},{h['Result']},${h['Amount']:.2f},{h['Win']},{h['T3_Level']},{h['Parlay_Step']},{h['Z1003_Loss_Count']}\n"
+            st.download_button("Download Simulation CSV", csv_data, "simulation_data.csv", "text/csv")
 
 # --- Main Application ---
 def main():
