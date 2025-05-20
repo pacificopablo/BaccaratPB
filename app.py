@@ -35,14 +35,22 @@ FOUR_TIER_MINIMUM_BANKROLL_MULTIPLIER = sum(
     FOUR_TIER_TABLE[tier][step] for tier in FOUR_TIER_TABLE for step in FOUR_TIER_TABLE[tier]
 )  # 1 + 3 + 7 + 21 + 50 + 150 + 350 = 537
 FLATBET_LEVELUP_TABLE = {
-    1: 1,
-    2: 2,
-    3: 4,
-    4: 8
+    1: 1,  # Level 1: Bet base_bet * 1
+    2: 2,  # Level 2: Bet base_bet * 2
+    3: 4,  # Level 3: Bet base_bet * 4
+    4: 8,  # Level 4: Bet base_bet * 8
+    5: 16  # Level 5: Bet base_bet * 16
 }
 FLATBET_LEVELUP_MINIMUM_BANKROLL_MULTIPLIER = sum(
     FLATBET_LEVELUP_TABLE[level] * 5 for level in FLATBET_LEVELUP_TABLE
-)  # (1*5 + 2*5 + 4*5 + 8*5) = 5 + 10 + 20 + 40 = 75
+)  # (1*5 + 2*5 + 4*5 + 8*5 + 16*5) = 5 + 10 + 20 + 40 + 80 = 155
+FLATBET_LEVELUP_THRESHOLDS = {
+    1: -5.0,   # Move to Level 2 after -5 units net loss at Level 1 (base_bet * 1)
+    2: -10.0,  # Move to Level 3 after -10 units net loss at Level 2 (base_bet * 2)
+    3: -20.0,  # Move to Level 4 after -20 units net loss at Level 3 (base_bet * 4)
+    4: -40.0,  # Move to Level 5 after -40 units net loss at Level 4 (base_bet * 8)
+    5: -40.0   # Stay at Level 5 after -40 units net loss (base_bet * 16)
+}
 MONEY_MANAGEMENT_STRATEGIES = ["T3", "Flatbet", "Parlay16", "Moon", "FourTier", "FlatbetLevelUp"]
 
 # --- CSS for Professional Styling ---
@@ -313,7 +321,7 @@ def initialize_session_state():
         'four_tier_step': 1,
         'four_tier_losses': 0,
         'flatbet_levelup_level': 1,
-        'flatbet_levelup_net_loss': 0.0,  # Changed from flatbet_levelup_losses
+        'flatbet_levelup_net_loss': 0.0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -367,7 +375,7 @@ def reset_session():
             'four_tier_step': 1,
             'four_tier_losses': 0,
             'flatbet_levelup_level': 1,
-            'flatbet_levelup_net_loss': 0.0,  # Changed from flatbet_levelup_losses
+            'flatbet_levelup_net_loss': 0.0,
         })
     except Exception as e:
         st.error(f"Error resetting session: {str(e)}")
@@ -446,7 +454,7 @@ def place_result(result: str):
             'four_tier_step': st.session_state.four_tier_step,
             'four_tier_losses': st.session_state.four_tier_losses,
             'flatbet_levelup_level': st.session_state.flatbet_levelup_level,
-            'flatbet_levelup_net_loss': st.session_state.flatbet_levelup_net_loss,  # Changed from flatbet_levelup_losses
+            'flatbet_levelup_net_loss': st.session_state.flatbet_levelup_net_loss,
             'bets_placed': st.session_state.bets_placed,
             'bets_won': st.session_state.bets_won,
             'transition_counts': st.session_state.transition_counts.copy(),
@@ -541,9 +549,11 @@ def place_result(result: str):
                             st.session_state.four_tier_step = 1
                             st.session_state.four_tier_losses = 0
                     elif st.session_state.money_management == 'FlatbetLevelUp':
-                        if st.session_state.flatbet_levelup_net_loss <= -5.0:
-                            st.session_state.flatbet_levelup_level = min(st.session_state.flatbet_levelup_level + 1, 4)
-                            st.session_state.flatbet_levelup_net_loss = 0.0
+                        # Progress to next level if net loss reaches threshold for current level
+                        current_level = st.session_state.flatbet_levelup_level
+                        if current_level < 5 and st.session_state.flatbet_levelup_net_loss <= FLATBET_LEVELUP_THRESHOLDS[current_level]:
+                            st.session_state.flatbet_levelup_level = min(st.session_state.flatbet_levelup_level + 1, 5)
+                            st.session_state.flatbet_levelup_net_loss = 0.0  # Reset net loss for new level
             if st.session_state.money_management == 'T3' and len(st.session_state.t3_results) == 3 and not (st.session_state.shoe_completed and st.session_state.safety_net_enabled):
                 wins = st.session_state.t3_results.count('W')
                 losses = st.session_state.t3_results.count('L')
@@ -570,7 +580,7 @@ def place_result(result: str):
             "FourTier_Level": st.session_state.four_tier_level if st.session_state.money_management == 'FourTier' else "-",
             "FourTier_Step": st.session_state.four_tier_step if st.session_state.money_management == 'FourTier' else "-",
             "FlatbetLevelUp_Level": st.session_state.flatbet_levelup_level if st.session_state.money_management == 'FlatbetLevelUp' else "-",
-            "FlatbetLevelUp_Net_Loss": round(st.session_state.flatbet_levelup_net_loss, 2) if st.session_state.money_management == 'FlatbetLevelUp' else "-",  # Changed from FlatbetLevelUp_Losses
+            "FlatbetLevelUp_Net_Loss": round(st.session_state.flatbet_levelup_net_loss, 2) if st.session_state.money_management == 'FlatbetLevelUp' else "-",
             "Money_Management": st.session_state.money_management,
             "Safety_Net": "On" if st.session_state.safety_net_enabled else "Off",
             "Previous_State": previous_state
@@ -779,7 +789,7 @@ def render_setup_form():
                             'four_tier_step': 1,
                             'four_tier_losses': 0,
                             'flatbet_levelup_level': 1,
-                            'flatbet_levelup_net_loss': 0.0,  # Changed from flatbet_levelup_losses
+                            'flatbet_levelup_net_loss': 0.0,
                         })
                         st.session_state.model, st.session_state.le = train_model()
                         if st.session_state.model is None or st.session_state.le is None:
@@ -997,7 +1007,7 @@ def render_status():
                 elif st.session_state.money_management == 'FourTier':
                     strategy_status += f"<br>**FourTier Level**: {st.session_state.four_tier_level}<br>**FourTier Step**: {st.session_state.four_tier_step}<br>**Consecutive Losses**: {st.session_state.four_tier_losses}"
                 elif st.session_state.money_management == 'FlatbetLevelUp':
-                    strategy_status += f"<br>**FlatbetLevelUp Level**: {st.session_state.flatbet_levelup_level}<br>**Net Loss**: {st.session_state.flatbet_levelup_net_loss:.2f}"  # Changed from Losses
+                    strategy_status += f"<br>**FlatbetLevelUp Level**: {st.session_state.flatbet_levelup_level}<br>**Net Loss**: {st.session_state.flatbet_levelup_net_loss:.2f}"
                 st.markdown(strategy_status, unsafe_allow_html=True)
                 st.markdown(f"**Bets Placed**: {st.session_state.bets_placed}")
                 st.markdown(f"**Bets Won**: {st.session_state.bets_won}")
@@ -1024,7 +1034,7 @@ def render_history():
                         "FourTier_Level": h["FourTier_Level"] if h["Money_Management"] == 'FourTier' else "-",
                         "FourTier_Step": h["FourTier_Step"] if h["Money_Management"] == 'FourTier' else "-",
                         "FlatbetLevelUp_Level": h["FlatbetLevelUp_Level"] if h["Money_Management"] == 'FlatbetLevelUp' else "-",
-                        "FlatbetLevelUp_Net_Loss": h["FlatbetLevelUp_Net_Loss"] if h["Money_Management"] == 'FlatbetLevelUp' else "-",  # Changed from FlatbetLevelUp_Losses
+                        "FlatbetLevelUp_Net_Loss": h["FlatbetLevelUp_Net_Loss"] if h["Money_Management"] == 'FlatbetLevelUp' else "-",
                         "Safety_Net": h.get("Safety_Net", "N/A")
                     }
                     for h in st.session_state.bet_history[-n:]
