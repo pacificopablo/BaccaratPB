@@ -1,3 +1,4 @@
+UPDATE KO MU NA
 import streamlit as st
 import numpy as np
 import pandas as pd
