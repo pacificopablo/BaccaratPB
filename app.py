@@ -826,15 +826,6 @@ def place_result(result: str):
     except Exception as e:
         st.error(f"Error processing result: {str(e)}")
 
-def run_simulation():
-    for _ in range(SHOE_SIZE - len(st.session_state.sequence)):
-        if st.session_state.bankroll <= 0 or (st.session_state.stop_loss_enabled and st.session_state.bankroll <= st.session_state.initial_bankroll * st.session_state.stop_loss_percentage):
-            break
-        result = simulate_shoe_result()
-        place_result(result)
-    st.session_state.ai_mode = False
-    st.rerun()
-
 # --- UI Components ---
 def render_setup_form():
     with st.expander("Session Setup", expanded=st.session_state.bankroll == 0):
@@ -866,7 +857,6 @@ def render_setup_form():
             stop_loss_percentage = st.number_input("Stop-Loss Percentage (%)", min_value=0.0, max_value=100.0, value=st.session_state.stop_loss_percentage * 100 or 100.00, step=0.1, disabled=not stop_loss_enabled)
             profit_lock_threshold = st.number_input("Profit Lock Threshold (% of Initial Bankroll)", min_value=100.0, max_value=1000.0, value=st.session_state.win_limit * 100 or 600.00, step=1.0)
             smart_skip_enabled = st.checkbox("Enable Smart Skip", value=False)
-            ai_mode = st.checkbox("Enable AI Auto-Play", value=False)
             st.markdown('</div>', unsafe_allow_html=True)
 
             if st.form_submit_button("Start Session"):
@@ -945,7 +935,7 @@ def render_setup_form():
                         'sequence_bet_index': 0,
                         'ml_model': None,
                         'ml_scaler': None,
-                        'ai_mode': ai_mode,
+                        'ai_mode': False,
                         'current_streak': 0,
                         'current_streak_type': None,
                         'longest_streak': 0,
@@ -953,9 +943,7 @@ def render_setup_form():
                         'current_chop_count': 0,
                         'longest_chop': 0
                     })
-                    st.success(f"Session started with {money_management} strategy! AI Auto-Play: {'On' if ai_mode else 'Off'}")
-                    if ai_mode:
-                        run_simulation()
+                    st.success(f"Session started with {money_management} strategy!")
 
 def render_result_input():
     with st.expander("Enter Result", expanded=True):
@@ -1217,9 +1205,9 @@ def render_history():
 
 # --- Main Application ---
 def main():
-    st.set_page_config(layout="wide", page_title="AI Baccarat")
+    st.set_page_config(layout="wide", page_title="Mang Baccarat Group AI")
     apply_custom_css()
-    st.title("AI Baccarat")
+    st.title("Mang Baccarat Group AI")
     initialize_session_state()
     render_setup_form()
     render_result_input()
