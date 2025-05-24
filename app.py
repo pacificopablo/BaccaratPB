@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 import time
 import random
 from collections import defaultdict
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+import uuid
 
 # --- Constants ---
 SESSION_FILE = os.path.join(tempfile.gettempdir(), "online_users.txt")
@@ -56,6 +59,8 @@ GRID = [
 GRID_MINIMUM_BANKROLL_MULTIPLIER = max(max(row) for row in GRID) * 5
 MONEY_MANAGEMENT_STRATEGIES = ["T3", "Flatbet", "Parlay16", "Moon", "FourTier", "FlatbetLevelUp", "Grid", "OscarGrind"]
 BET_SEQUENCE = ['P', 'B', 'P', 'P', 'B', 'B']
+OUTCOME_MAPPING = {'P': 0, 'B': 1, 'T': 2}
+REVERSE_MAPPING = {0: 'P', 1: 'B', 2: 'T'}
 
 # --- CSS for Professional Styling ---
 def apply_custom_css():
@@ -198,6 +203,26 @@ def apply_custom_css():
         font-size: 1rem;
         color: #2c5282;
     }
+    .pattern-section {
+        background-color: #f7fafc;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 10px;
+        margin-bottom: 10px;
+        border: 1px solid #e2e8f0;
+    }
+    .pattern-section h3 {
+        color: #2c5282;
+        font-size: 1.1rem;
+        font-weight: 600;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+    }
+    .pattern-section h3 .icon {
+        margin-right: 8px;
+        font-size: 1.2rem;
+    }
     @media (max-width: 768px) {
         .stApp {
             padding: 10px;
@@ -245,6 +270,44 @@ def track_user_session() -> int:
     except:
         return 0
 
+# --- Machine Learning Model ---
+def train_ml_model(sequence):
+    if len(sequence) < 5:
+        return None, None
+    X, y = [], []
+    for i in range(len(sequence) - 4):
+        window = sequence[i:i+4]
+        next_outcome = sequence[i+4]
+        features = [
+            OUTCOME_MAPPING[window[j]] for j in range(len(window))
+        ] + [
+            st.session_state.transition_counts.get(f"{window[-1]}{k}", 0) / (st.session_state.transition_counts.get(f"{window[-1]}P", 0) + st.session_state.transition_counts.get(f"{window[-1]}B", 0) + 1)
+            for k in ['P', 'B']
+        ]
+        X.append(features)
+        y.append(OUTCOME_MAPPING[next_outcome])
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_scaled, y)
+    return model, scaler
+
+def predict_next_outcome(sequence, model, scaler):
+    if len(sequence) < 4 or model is None:
+        return 'P', 0.5  # Default to Player with low confidence
+    window = sequence[-4:]
+    features = [
+        OUTCOME_MAPPING[window[j]] for j in range(len(window))
+    ] + [
+        st.session_state.transition_counts.get(f"{window[-1]}{k}", 0) / (st.session_state.transition_counts.get(f"{window[-1]}P", 0) + st.session_state.transition_counts.get(f"{window[-1]}B", 0) + 1)
+        for k in ['P', 'B']
+    ]
+    X_scaled = scaler.transform([features])
+    probs = model.predict_proba(X_scaled)[0]
+    predicted_idx = np.argmax(probs)
+    confidence = probs[predicted_idx]
+    return REVERSE_MAPPING[predicted_idx], confidence
+
 # --- Session State Management ---
 def initialize_session_state():
     defaults = {
@@ -265,7 +328,7 @@ def initialize_session_state():
         'win_limit': WIN_LIMIT,
         'shoe_completed': False,
         'safety_net_enabled': True,
-        'advice': "Need 1 more Player or Banker result",
+        'advice': "Need 4 more Player or Banker results for AI prediction",
         'parlay_step': 1,
         'parlay_wins': 0,
         'parlay_using_base': True,
@@ -287,7 +350,16 @@ def initialize_session_state():
         'grid_pos': [0, 0],
         'oscar_cycle_profit': 0.0,
         'oscar_current_bet_level': 1,
-        'sequence_bet_index': 0
+        'sequence_bet_index': 0,
+        'ml_model': None,
+        'ml_scaler': None,
+        'ai_mode': False,
+        'current_streak': 0,
+        'current_streak_type': None,
+        'longest_streak': 0,
+        'longest_streak_type': None,
+        'current_chop_count': 0,
+        'longest_chop': 0
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -330,7 +402,7 @@ def reset_session():
         'safety_net_enabled': setup_values['safety_net_enabled'],
         'safety_net_percentage': setup_values['safety_net_percentage'],
         'smart_skip_enabled': setup_values['smart_skip_enabled'],
-        'advice': "Need 1 more Player or Banker result",
+        'advice': "Need 4 more Player or Banker results for AI prediction",
         'parlay_step': 1,
         'parlay_wins': 0,
         'parlay_using_base': True,
@@ -350,7 +422,16 @@ def reset_session():
         'grid_pos': [0, 0],
         'oscar_cycle_profit': 0.0,
         'oscar_current_bet_level': 1,
-        'sequence_bet_index': 0
+        'sequence_bet_index': 0,
+        'ml_model': None,
+        'ml_scaler': None,
+        'ai_mode': False,
+        'current_streak': 0,
+        'current_streak_type': None,
+        'longest_streak': 0,
+        'longest_streak_type': None,
+        'current_chop_count': 0,
+        'longest_chop': 0
     })
 
 # --- Betting and Prediction Logic ---
@@ -379,6 +460,10 @@ def calculate_bet_amount(bet_selection: str) -> float:
         return 0.0
     except:
         return 0.0
+
+def simulate_shoe_result():
+    probabilities = {'P': 0.4586, 'B': 0.4460, 'T': 0.0954}
+    return random.choices(['P', 'B', 'T'], weights=[probabilities['P'], probabilities['B'], probabilities['T']], k=1)[0]
 
 def place_result(result: str):
     try:
@@ -438,7 +523,13 @@ def place_result(result: str):
             'grid_pos': st.session_state.grid_pos.copy(),
             'oscar_cycle_profit': st.session_state.oscar_cycle_profit,
             'oscar_current_bet_level': st.session_state.oscar_current_bet_level,
-            'sequence_bet_index': st.session_state.sequence_bet_index
+            'sequence_bet_index': st.session_state.sequence_bet_index,
+            'current_streak': st.session_state.current_streak,
+            'current_streak_type': st.session_state.current_streak_type,
+            'longest_streak': st.session_state.longest_streak,
+            'longest_streak_type': st.session_state.longest_streak_type,
+            'current_chop_count': st.session_state.current_chop_count,
+            'longest_chop': st.session_state.longest_chop
         }
 
         # Update transition counts
@@ -447,6 +538,38 @@ def place_result(result: str):
             if prev_result in ['P', 'B']:
                 transition = f"{prev_result}{result}"
                 st.session_state.transition_counts[transition] += 1
+
+        # Update streak and chop detection
+        valid_sequence = [r for r in st.session_state.sequence if r in ['P', 'B']]
+        if result in ['P', 'B']:
+            # Streak detection
+            if len(valid_sequence) == 0 or st.session_state.current_streak_type != result:
+                st.session_state.current_streak = 1
+                st.session_state.current_streak_type = result
+            else:
+                st.session_state.current_streak += 1
+            if st.session_state.current_streak > st.session_state.longest_streak:
+                st.session_state.longest_streak = st.session_state.current_streak
+                st.session_state.longest_streak_type = st.session_state.current_streak_type
+            
+            # Chop detection
+            if len(valid_sequence) >= 1:
+                last_valid = valid_sequence[-1]
+                if result != last_valid:  # Alternation (P to B or B to P)
+                    st.session_state.current_chop_count += 1
+                else:
+                    if st.session_state.current_chop_count > st.session_state.longest_chop:
+                        st.session_state.longest_chop = st.session_state.current_chop_count
+                    st.session_state.current_chop_count = 0
+            else:
+                st.session_state.current_chop_count = 0
+        else:  # Result is Tie
+            # Reset streak and update longest chop if necessary
+            if st.session_state.current_chop_count > st.session_state.longest_chop:
+                st.session_state.longest_chop = st.session_state.current_chop_count
+            st.session_state.current_streak = 0
+            st.session_state.current_streak_type = None
+            st.session_state.current_chop_count = 0
 
         # Resolve pending bet
         bet_amount = 0
@@ -581,6 +704,11 @@ def place_result(result: str):
         if result in ['P', 'B', 'T']:
             st.session_state.sequence.append(result)
 
+        # Train ML model
+        valid_sequence = [r for r in st.session_state.sequence if r in ['P', 'B', 'T']]
+        if len(valid_sequence) >= 5:
+            st.session_state.ml_model, st.session_state.ml_scaler = train_ml_model(valid_sequence)
+
         # Increment sequence_bet_index for P or B results (unless reset by a win)
         if result in ['P', 'B'] and (bet_outcome != 'win'):
             st.session_state.sequence_bet_index += 1
@@ -604,17 +732,19 @@ def place_result(result: str):
             "Sequence_Bet_Index": st.session_state.sequence_bet_index % len(BET_SEQUENCE) if st.session_state.sequence_bet_index > 0 or bet_outcome == 'win' else "-",
             "Money_Management": st.session_state.money_management,
             "Safety_Net": "On" if st.session_state.safety_net_enabled else "Off",
+            "Current_Streak": f"{st.session_state.current_streak} ({st.session_state.current_streak_type})" if st.session_state.current_streak_type else "-",
+            "Current_Chop": st.session_state.current_chop_count,
             "Previous_State": previous_state
         })
         if len(st.session_state.bet_history) > HISTORY_LIMIT:
             st.session_state.bet_history = st.session_state.bet_history[-HISTORY_LIMIT:]
 
-        # Prediction logic (Sequence + Transition probability)
-        valid_sequence = [r for r in st.session_state.sequence if r in ['P', 'B']]
-        if len(valid_sequence) < 1:
+        # Prediction logic (Sequence + ML model + Transition with voting)
+        valid_sequence = [r for r in st.session_state.sequence if r in ['P', 'B', 'T']]
+        if len(valid_sequence) < 4:
             st.session_state.pending_bet = None
-            st.session_state.advice = "Need 1 more Player or Banker result"
-        elif len(valid_sequence) >= 1 and result in ['P', 'B']:
+            st.session_state.advice = "Need 4 more Player or Banker results for AI prediction"
+        elif len(valid_sequence) >= 4 and result in ['P', 'B']:
             # Transition probability prediction
             total_from_p = st.session_state.transition_counts['PP'] + st.session_state.transition_counts['PB']
             total_from_b = st.session_state.transition_counts['BP'] + st.session_state.transition_counts['BB']
@@ -636,44 +766,74 @@ def place_result(result: str):
             # Sequence prediction
             seq_predicted_outcome = BET_SEQUENCE[st.session_state.sequence_bet_index % len(BET_SEQUENCE)]
 
-            # Betting decision
-            if seq_predicted_outcome == trans_predicted_outcome:
-                bet_selection = seq_predicted_outcome
-                confidence = trans_confidence
-                strategy_used = 'Sequence+Transition'
-                bet_amount = calculate_bet_amount(bet_selection)
-                if bet_amount <= st.session_state.bankroll:
-                    st.session_state.pending_bet = (bet_amount, bet_selection)
-                    strategy_info = f"{st.session_state.money_management}"
-                    if st.session_state.shoe_completed and st.session_state.safety_net_enabled:
-                        strategy_info = "Safety Net (Flatbet)"
-                    elif st.session_state.money_management == 'T3':
-                        strategy_info += f" Level {st.session_state.t3_level}"
-                    elif st.session_state.money_management == 'Parlay16':
-                        strategy_info += f" Step {st.session_state.parlay_step}/16"
-                    elif st.session_state.money_management == 'Moon':
-                        strategy_info += f" Level {st.session_state.moon_level}"
-                    elif st.session_state.money_management == 'FourTier':
-                        strategy_info += f" Level {st.session_state.four_tier_level} Step {st.session_state.four_tier_step}"
-                    elif st.session_state.money_management == 'FlatbetLevelUp':
-                        strategy_info += f" Level {st.session_state.flatbet_levelup_level} Net Loss {st.session_state.flatbet_levelup_net_loss:.2f}"
-                    elif st.session_state.money_management == 'Grid':
-                        strategy_info += f" Grid ({st.session_state.grid_pos[0]},{st.session_state.grid_pos[1]})"
-                    elif st.session_state.money_management == 'OscarGrind':
-                        strategy_info += f" Bet Level {st.session_state.oscar_current_bet_level} Cycle Profit ${st.session_state.oscar_cycle_profit:.2f}"
-                    st.session_state.advice = f"Bet ${bet_amount:.2f} on {bet_selection} ({strategy_info}, {strategy_used}: {confidence:.1f}%, Sequence Pos: {st.session_state.sequence_bet_index % len(BET_SEQUENCE)})"
+            # ML prediction
+            ml_predicted_outcome, ml_confidence = predict_next_outcome(valid_sequence, st.session_state.ml_model, st.session_state.ml_scaler)
+
+            # Voting logic
+            votes = [ml_predicted_outcome, seq_predicted_outcome, trans_predicted_outcome]
+            vote_counts = {'P': 0, 'B': 0, 'T': 0}
+            for vote in votes:
+                vote_counts[vote] += 1
+
+            # Find the outcome with the most votes
+            max_votes = max(vote_counts.values())
+            if max_votes >= 2:  # At least two predictions agree
+                bet_selection = max(vote_counts, key=vote_counts.get)
+                if bet_selection in ['P', 'B']:
+                    confidence = ml_confidence * 100 if ml_predicted_outcome == bet_selection else (trans_confidence if trans_predicted_outcome == bet_selection else 50.0)
+                    strategy_used = []
+                    if ml_predicted_outcome == bet_selection:
+                        strategy_used.append('AI')
+                    if seq_predicted_outcome == bet_selection:
+                        strategy_used.append('Sequence')
+                    if trans_predicted_outcome == bet_selection:
+                        strategy_used.append('Transition')
+                    strategy_used = '+'.join(strategy_used)
+                    bet_amount = calculate_bet_amount(bet_selection)
+                    if bet_amount <= st.session_state.bankroll:
+                        st.session_state.pending_bet = (bet_amount, bet_selection)
+                        strategy_info = f"{st.session_state.money_management}"
+                        if st.session_state.shoe_completed and st.session_state.safety_net_enabled:
+                            strategy_info = "Safety Net (Flatbet)"
+                        elif st.session_state.money_management == 'T3':
+                            strategy_info += f" Level {st.session_state.t3_level}"
+                        elif st.session_state.money_management == 'Parlay16':
+                            strategy_info += f" Step {st.session_state.parlay_step}/16"
+                        elif st.session_state.money_management == 'Moon':
+                            strategy_info += f" Level {st.session_state.moon_level}"
+                        elif st.session_state.money_management == 'FourTier':
+                            strategy_info += f" Level {st.session_state.four_tier_level} Step {st.session_state.four_tier_step}"
+                        elif st.session_state.money_management == 'FlatbetLevelUp':
+                            strategy_info += f" Level {st.session_state.flatbet_levelup_level} Net Loss {st.session_state.flatbet_levelup_net_loss:.2f}"
+                        elif st.session_state.money_management == 'Grid':
+                            strategy_info += f" Grid ({st.session_state.grid_pos[0]},{st.session_state.grid_pos[1]})"
+                        elif st.session_state.money_management == 'OscarGrind':
+                            strategy_info += f" Bet Level {st.session_state.oscar_current_bet_level} Cycle Profit ${st.session_state.oscar_cycle_profit:.2f}"
+                        st.session_state.advice = f"Bet ${bet_amount:.2f} on {bet_selection} ({strategy_info}, {strategy_used}: {confidence:.1f}%, Sequence Pos: {st.session_state.sequence_bet_index % len(BET_SEQUENCE)})"
+                    else:
+                        st.session_state.pending_bet = None
+                        st.session_state.advice = f"Skip betting (bet ${bet_amount:.2f} exceeds bankroll)"
                 else:
                     st.session_state.pending_bet = None
-                    st.session_state.advice = f"Skip betting (bet ${bet_amount:.2f} exceeds bankroll)"
-            else:
+                    st.session_state.advice = f"Skip betting (predicted outcome is Tie: AI={ml_predicted_outcome} {ml_confidence*100:.1f}%, Sequence={seq_predicted_outcome}, Transition={trans_predicted_outcome})"
+            else:  # No agreement (all predictions differ)
                 st.session_state.pending_bet = None
-                st.session_state.advice = f"Skip betting (sequence predicts {seq_predicted_outcome}, transition predicts {trans_predicted_outcome})"
+                st.session_state.advice = f"Skip betting (no agreement: AI={ml_predicted_outcome} {ml_confidence*100:.1f}%, Sequence={seq_predicted_outcome}, Transition={trans_predicted_outcome})"
 
         if len(st.session_state.sequence) >= SHOE_SIZE:
             reset_session()
             st.success(f"Shoe of {SHOE_SIZE} hands completed. Game reset.")
-    except:
-        st.error("Error processing result.")
+    except Exception as e:
+        st.error(f"Error processing result: {str(e)}")
+
+def run_simulation():
+    for _ in range(SHOE_SIZE - len(st.session_state.sequence)):
+        if st.session_state.bankroll <= 0 or (st.session_state.stop_loss_enabled and st.session_state.bankroll <= st.session_state.initial_bankroll * st.session_state.stop_loss_percentage):
+            break
+        result = simulate_shoe_result()
+        place_result(result)
+    st.session_state.ai_mode = False
+    st.rerun()
 
 # --- UI Components ---
 def render_setup_form():
@@ -699,13 +859,14 @@ def render_setup_form():
                     target_value_percentage = 0.0
 
             st.markdown('<div class="target-profit-section">', unsafe_allow_html=True)
-            st.markdown('<h3><span class="icon">🎯</span>Safety & Limits</h3>', unsafe_allow_html=True)
+            st.markdown('<h3><span class="icon">🔒</span>Safety & Limits</h3>', unsafe_allow_html=True)
             safety_net_enabled = st.checkbox("Enable Safety Net", value=True)
             safety_net_percentage = st.number_input("Safety Net Percentage (%)", min_value=0.0, max_value=100.0, value=st.session_state.safety_net_percentage * 100 or 2.00, step=0.1, disabled=not safety_net_enabled)
             stop_loss_enabled = st.checkbox("Enable Stop-Loss", value=True)
             stop_loss_percentage = st.number_input("Stop-Loss Percentage (%)", min_value=0.0, max_value=100.0, value=st.session_state.stop_loss_percentage * 100 or 100.00, step=0.1, disabled=not stop_loss_enabled)
             profit_lock_threshold = st.number_input("Profit Lock Threshold (% of Initial Bankroll)", min_value=100.0, max_value=1000.0, value=st.session_state.win_limit * 100 or 600.00, step=1.0)
             smart_skip_enabled = st.checkbox("Enable Smart Skip", value=False)
+            ai_mode = st.checkbox("Enable AI Auto-Play", value=False)
             st.markdown('</div>', unsafe_allow_html=True)
 
             if st.form_submit_button("Start Session"):
@@ -761,7 +922,7 @@ def render_setup_form():
                         'safety_net_enabled': safety_net_enabled,
                         'safety_net_percentage': safety_net_percentage / 100,
                         'smart_skip_enabled': smart_skip_enabled,
-                        'advice': "Need 1 more Player or Banker result",
+                        'advice': "Need 4 more Player or Banker results for AI prediction",
                         'parlay_step': 1,
                         'parlay_wins': 0,
                         'parlay_using_base': True,
@@ -781,9 +942,20 @@ def render_setup_form():
                         'grid_pos': [0, 0],
                         'oscar_cycle_profit': 0.0,
                         'oscar_current_bet_level': 1,
-                        'sequence_bet_index': 0
+                        'sequence_bet_index': 0,
+                        'ml_model': None,
+                        'ml_scaler': None,
+                        'ai_mode': ai_mode,
+                        'current_streak': 0,
+                        'current_streak_type': None,
+                        'longest_streak': 0,
+                        'longest_streak_type': None,
+                        'current_chop_count': 0,
+                        'longest_chop': 0
                     })
-                    st.success(f"Session started with {money_management} strategy!")
+                    st.success(f"Session started with {money_management} strategy! AI Auto-Play: {'On' if ai_mode else 'Off'}")
+                    if ai_mode:
+                        run_simulation()
 
 def render_result_input():
     with st.expander("Enter Result", expanded=True):
@@ -793,19 +965,19 @@ def render_result_input():
             st.info("Continuing with safety net at base bet.")
         cols = st.columns(4)
         with cols[0]:
-            if st.button("Player", key="player_btn", disabled=(st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0):
+            if st.button("Player", key="player_btn", disabled=(st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0 or st.session_state.ai_mode):
                 place_result("P")
                 st.rerun()
         with cols[1]:
-            if st.button("Banker", key="banker_btn", disabled=(st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0):
+            if st.button("Banker", key="banker_btn", disabled=(st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0 or st.session_state.ai_mode):
                 place_result("B")
                 st.rerun()
         with cols[2]:
-            if st.button("Tie", key="tie_btn", disabled=(st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0):
+            if st.button("Tie", key="tie_btn", disabled=(st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0 or st.session_state.ai_mode):
                 place_result("T")
                 st.rerun()
         with cols[3]:
-            if st.button("Undo Last", key="undo_btn", disabled=not st.session_state.bet_history or (st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0):
+            if st.button("Undo Last", key="undo_btn", disabled=not st.session_state.bet_history or (st.session_state.shoe_completed and not st.session_state.safety_net_enabled) or st.session_state.bankroll == 0 or st.session_state.ai_mode):
                 if not st.session_state.sequence:
                     st.warning("No results to undo.")
                 else:
@@ -825,11 +997,13 @@ def render_result_input():
                     if len(st.session_state.sequence) >= 1 and last_bet["Result"] in ['P', 'B'] and st.session_state.sequence[-1] in ['P', 'B']:
                         transition = f"{st.session_state.sequence[-1]}{last_bet['Result']}"
                         st.session_state.transition_counts[transition] = max(0, st.session_state.transition_counts[transition] - 1)
-                    valid_sequence = [r for r in st.session_state.sequence if r in ['P', 'B']]
-                    if len(valid_sequence) < 1:
+                    valid_sequence = [r for r in st.session_state.sequence if r in ['P', 'B', 'T']]
+                    if len(valid_sequence) < 4:
                         st.session_state.pending_bet = None
-                        st.session_state.advice = "Need 1 more Player or Banker result"
+                        st.session_state.advice = "Need 4 more Player or Banker results for AI prediction"
                     else:
+                        # Train ML model
+                        st.session_state.ml_model, st.session_state.ml_scaler = train_ml_model(valid_sequence)
                         # Transition probability prediction
                         total_from_p = st.session_state.transition_counts['PP'] + st.session_state.transition_counts['PB']
                         total_from_b = st.session_state.transition_counts['BP'] + st.session_state.transition_counts['BB']
@@ -851,38 +1025,59 @@ def render_result_input():
                         # Sequence prediction
                         seq_predicted_outcome = BET_SEQUENCE[st.session_state.sequence_bet_index % len(BET_SEQUENCE)]
 
-                        # Betting decision
-                        if seq_predicted_outcome == trans_predicted_outcome:
-                            bet_selection = seq_predicted_outcome
-                            confidence = trans_confidence
-                            strategy_used = 'Sequence+Transition'
-                            bet_amount = calculate_bet_amount(bet_selection)
-                            if bet_amount <= st.session_state.bankroll:
-                                st.session_state.pending_bet = (bet_amount, bet_selection)
-                                strategy_info = f"{st.session_state.money_management}"
-                                if st.session_state.shoe_completed and st.session_state.safety_net_enabled:
-                                    strategy_info = "Safety Net (Flatbet)"
-                                elif st.session_state.money_management == 'T3':
-                                    strategy_info += f" Level {st.session_state.t3_level}"
-                                elif st.session_state.money_management == 'Parlay16':
-                                    strategy_info += f" Step {st.session_state.parlay_step}/16"
-                                elif st.session_state.money_management == 'Moon':
-                                    strategy_info += f" Level {st.session_state.moon_level}"
-                                elif st.session_state.money_management == 'FourTier':
-                                    strategy_info += f" Level {st.session_state.four_tier_level} Step {st.session_state.four_tier_step}"
-                                elif st.session_state.money_management == 'FlatbetLevelUp':
-                                    strategy_info += f" Level {st.session_state.flatbet_levelup_level} Net Loss {st.session_state.flatbet_levelup_net_loss:.2f}"
-                                elif st.session_state.money_management == 'Grid':
-                                    strategy_info += f" Grid ({st.session_state.grid_pos[0]},{st.session_state.grid_pos[1]})"
-                                elif st.session_state.money_management == 'OscarGrind':
-                                    strategy_info += f" Bet Level {st.session_state.oscar_current_bet_level} Cycle Profit ${st.session_state.oscar_cycle_profit:.2f}"
-                                st.session_state.advice = f"Bet ${bet_amount:.2f} on {bet_selection} ({strategy_info}, {strategy_used}: {confidence:.1f}%, Sequence Pos: {st.session_state.sequence_bet_index % len(BET_SEQUENCE)})"
+                        # ML prediction
+                        ml_predicted_outcome, ml_confidence = predict_next_outcome(valid_sequence, st.session_state.ml_model, st.session_state.ml_scaler)
+
+                        # Voting logic
+                        votes = [ml_predicted_outcome, seq_predicted_outcome, trans_predicted_outcome]
+                        vote_counts = {'P': 0, 'B': 0, 'T': 0}
+                        for vote in votes:
+                            vote_counts[vote] += 1
+
+                        # Find the outcome with the most votes
+                        max_votes = max(vote_counts.values())
+                        if max_votes >= 2:  # At least two predictions agree
+                            bet_selection = max(vote_counts, key=vote_counts.get)
+                            if bet_selection in ['P', 'B']:
+                                confidence = ml_confidence * 100 if ml_predicted_outcome == bet_selection else (trans_confidence if trans_predicted_outcome == bet_selection else 50.0)
+                                strategy_used = []
+                                if ml_predicted_outcome == bet_selection:
+                                    strategy_used.append('AI')
+                                if seq_predicted_outcome == bet_selection:
+                                    strategy_used.append('Sequence')
+                                if trans_predicted_outcome == bet_selection:
+                                    strategy_used.append('Transition')
+                                strategy_used = '+'.join(strategy_used)
+                                bet_amount = calculate_bet_amount(bet_selection)
+                                if bet_amount <= st.session_state.bankroll:
+                                    st.session_state.pending_bet = (bet_amount, bet_selection)
+                                    strategy_info = f"{st.session_state.money_management}"
+                                    if st.session_state.shoe_completed and st.session_state.safety_net_enabled:
+                                        strategy_info = "Safety Net (Flatbet)"
+                                    elif st.session_state.money_management == 'T3':
+                                        strategy_info += f" Level {st.session_state.t3_level}"
+                                    elif st.session_state.money_management == 'Parlay16':
+                                        strategy_info += f" Step {st.session_state.parlay_step}/16"
+                                    elif st.session_state.money_management == 'Moon':
+                                        strategy_info += f" Level {st.session_state.moon_level}"
+                                    elif st.session_state.money_management == 'FourTier':
+                                        strategy_info += f" Level {st.session_state.four_tier_level} Step {st.session_state.four_tier_step}"
+                                    elif st.session_state.money_management == 'FlatbetLevelUp':
+                                        strategy_info += f" Level {st.session_state.flatbet_levelup_level} Net Loss {st.session_state.flatbet_levelup_net_loss:.2f}"
+                                    elif st.session_state.money_management == 'Grid':
+                                        strategy_info += f" Grid ({st.session_state.grid_pos[0]},{st.session_state.grid_pos[1]})"
+                                    elif st.session_state.money_management == 'OscarGrind':
+                                        strategy_info += f" Bet Level {st.session_state.oscar_current_bet_level} Cycle Profit ${st.session_state.oscar_cycle_profit:.2f}"
+                                    st.session_state.advice = f"Bet ${bet_amount:.2f} on {bet_selection} ({strategy_info}, {strategy_used}: {confidence:.1f}%, Sequence Pos: {st.session_state.sequence_bet_index % len(BET_SEQUENCE)})"
+                                else:
+                                    st.session_state.pending_bet = None
+                                    st.session_state.advice = f"Skip betting (bet ${bet_amount:.2f} exceeds bankroll)"
                             else:
                                 st.session_state.pending_bet = None
-                                st.session_state.advice = f"Skip betting (bet ${bet_amount:.2f} exceeds bankroll)"
-                        else:
+                                st.session_state.advice = f"Skip betting (predicted outcome is Tie: AI={ml_predicted_outcome} {ml_confidence*100:.1f}%, Sequence={seq_predicted_outcome}, Transition={trans_predicted_outcome})"
+                        else:  # No agreement (all predictions differ)
                             st.session_state.pending_bet = None
-                            st.session_state.advice = f"Skip betting (sequence predicts {seq_predicted_outcome}, transition predicts {trans_predicted_outcome})"
+                            st.session_state.advice = f"Skip betting (no agreement: AI={ml_predicted_outcome} {ml_confidence*100:.1f}%, Sequence={seq_predicted_outcome}, Transition={trans_predicted_outcome})"
                     st.success("Undone last action.")
                     st.rerun()
         if st.session_state.shoe_completed and st.button("Reset and Start New Shoe", key="new_shoe_btn"):
@@ -921,7 +1116,7 @@ def render_prediction():
             st.markdown(
                 f"<div style='background-color: #edf2f7; padding: 15px; border-radius: 8px;'>"
                 f"<p style='font-size:1.2rem; font-weight:bold; margin:0; color:{text_color};'>"
-                f"Advice: {advice}</p></div>",
+                f"AI Advice: {advice}</p></div>",
                 unsafe_allow_html=True
             )
 
@@ -943,6 +1138,7 @@ def render_status():
             st.markdown(f"**Safety Net**: {'On' if st.session_state.safety_net_enabled else 'Off'}")
             st.markdown(f"**Hands Played**: {len(st.session_state.sequence)}")
             st.markdown(f"**Sequence Bet Position**: {st.session_state.sequence_bet_index % len(BET_SEQUENCE)}")
+            st.markdown(f"**AI Mode**: {'On' if st.session_state.ai_mode else 'Off'}")
             strategy_status = f"**Money Management**: {st.session_state.money_management}"
             if st.session_state.shoe_completed and st.session_state.safety_net_enabled:
                 strategy_status += "<br>**Mode**: Safety Net (Flatbet)"
@@ -977,6 +1173,17 @@ def render_status():
                 f"B→P: {prob_b_to_p:.1f}%, B→B: {prob_b_to_b:.1f}%",
                 unsafe_allow_html=True
             )
+            # Pattern Detection Section
+            st.markdown('<div class="pattern-section">', unsafe_allow_html=True)
+            st.markdown('<h3><span class="icon">📈</span>Pattern Detection</h3>', unsafe_allow_html=True)
+            st.markdown(
+                f"**Current Streak**: {st.session_state.current_streak} ({st.session_state.current_streak_type or 'None'})<br>"
+                f"**Longest Streak**: {st.session_state.longest_streak} ({st.session_state.longest_streak_type or 'None'})<br>"
+                f"**Current Chop**: {st.session_state.current_chop_count}<br>"
+                f"**Longest Chop**: {st.session_state.longest_chop}",
+                unsafe_allow_html=True
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
 
 def render_history():
     with st.expander("Bet History", expanded=True):
@@ -1001,30 +1208,25 @@ def render_history():
                     "Oscar_Bet_Level": h["Oscar_Bet_Level"],
                     "Oscar_Cycle_Profit": h["Oscar_Cycle_Profit"],
                     "Sequence_Bet_Index": h["Sequence_Bet_Index"],
-                    "Safety_Net": h["Safety_Net"]
+                    "Safety_Net": h["Safety_Net"],
+                    "Current_Streak": h["Current_Streak"],
+                    "Current_Chop": h["Current_Chop"]
                 }
                 for h in st.session_state.bet_history[-n:]
             ], use_container_width=True)
 
 # --- Main Application ---
 def main():
-    st.set_page_config(layout="wide", page_title="Mang Baccarat")
+    st.set_page_config(layout="wide", page_title="AI Baccarat")
     apply_custom_css()
-    st.title("Mang Baccarat")
+    st.title("AI Baccarat")
     initialize_session_state()
-    if st.button("Clear Session State"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        render_setup_form()
-        render_result_input()
-        render_bead_plate()
-        render_prediction()
-        render_status()
-    with col2:
-        render_history()
+    render_setup_form()
+    render_result_input()
+    render_bead_plate()
+    render_prediction()
+    render_status()
+    render_history()
 
 if __name__ == "__main__":
     main()
